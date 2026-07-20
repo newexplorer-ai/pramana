@@ -165,6 +165,55 @@ body.adminpage{background:#fff;background-image:none;overflow:hidden;}
 .rotate-btn:hover{border-color:#c9c3b7;background:var(--paper-soft);}
 .rotate-btn.confirming{border-color:var(--adm);color:var(--adm);background:var(--adm-bg);}
 
+/* ---------------- credential status ---------------- */
+.cred-card{align-items:flex-start;}
+.cred-card .key-provider{display:flex;align-items:center;gap:8px;}
+.cred-dot{width:8px;height:8px;border-radius:999px;flex:none;background:var(--faint-2);}
+.cred-dot.ok{background:var(--t1);}
+.cred-dot.warn{background:var(--adm);}
+.cred-dot.bad{background:#b4543e;}
+.cred-status{font-size:10.5px;font-weight:600;letter-spacing:.02em;}
+.cred-status.ok{color:var(--t1);}
+.cred-status.warn{color:var(--adm);}
+.cred-status.bad{color:#b4543e;}
+.cred-detail{margin-top:7px;font-size:11.5px;line-height:1.5;color:var(--muted);}
+.cred-models{margin-top:9px;display:flex;flex-wrap:wrap;gap:8px;}
+.cred-models span{
+  font-size:10px;color:var(--faint);background:var(--paper-soft);
+  border:1px solid var(--line);border-radius:5px;padding:3px 8px;
+}
+.cred-models b{font-family:var(--mono);font-weight:500;color:var(--body);margin-left:4px;}
+.cred-rotate{margin-top:20px;border:1px solid var(--line);border-radius:10px;background:var(--paper);padding:15px 17px;}
+.cred-rotate p{margin:8px 0 0;font-size:11.5px;line-height:1.55;color:var(--muted-2);}
+.cred-cmd{
+  display:block;margin-top:10px;font-family:var(--mono);font-size:11.5px;color:var(--body);
+  background:#f6f5f2;border:1px solid var(--line);border-radius:7px;padding:10px 12px;
+  overflow-x:auto;white-space:nowrap;
+}
+
+/* ---------------- safety switches ---------------- */
+.switch-panel{
+  margin-top:16px;border:1px solid var(--line);border-radius:10px;
+  background:var(--paper);padding:15px 17px;
+}
+.switch-row{
+  display:flex;align-items:flex-start;gap:16px;padding:14px 0 0;margin-top:12px;
+  border-top:1px solid var(--hair);
+}
+.switch-panel .switch-row:first-of-type{border-top:none;margin-top:10px;padding-top:0;}
+.switch-main{flex:1;min-width:0;}
+.switch-label{font-size:12.5px;font-weight:600;color:var(--ink);display:flex;align-items:center;gap:8px;}
+.switch-flag{
+  font-size:8.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--adm);background:var(--adm-bg);border:1px solid var(--adm-br);
+  padding:1px 6px;border-radius:3px;
+}
+.switch-desc{margin-top:4px;font-size:11.5px;line-height:1.55;color:var(--muted-2);}
+.switch-desc b{color:var(--adm-ink);font-weight:600;}
+.switch-row.switch-off{background:linear-gradient(90deg,var(--adm-bg) 0%,transparent 60%);
+  margin-left:-17px;margin-right:-17px;padding-left:17px;padding-right:17px;border-radius:6px;}
+.switch-row .toggle{flex:none;margin-top:2px;}
+
 /* ---------------- audit chips ---------------- */
 .action-chip{font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:5px;border:1px solid;}
 .action-create{color:var(--t1);background:var(--t1-bg);border-color:var(--t1-br);}

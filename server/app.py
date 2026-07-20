@@ -130,6 +130,10 @@ SEED_CONFIG = [
     ("generation.effort", "medium", "medium", "Effort level for generation (low|medium|high).", 0),
     ("websearch.max_uses", "3", "3", "Tier 2 search cap per query.", 0),
     ("groundedness.judge", "true", "true", "Run the judge model on Tier 2 answers.", 0),
+    # Safety switch: when false, unverified general-model answers are never
+    # served — every ungrounded question returns an honest not-found instead.
+    ("answers.allow_tier3", "true", "true",
+     "Serve unverified Tier 3 answers. Off = grounded answers only.", 0),
     ("cost.daily_user_cap", "40", "40", "Per-clinician query cap per day.", 0),
     ("context.max_turns", "6", "6", "Conversation depth resent per request.", 0),
 ]
@@ -146,10 +150,19 @@ def init_db() -> None:
     if not q("SELECT 1 FROM allowlist_domains LIMIT 1"):
         for domain, note in SEED_DOMAINS:
             q("INSERT INTO allowlist_domains VALUES(?,?,1,'system',?)", (domain, note, now()))
-    if not q("SELECT 1 FROM app_config LIMIT 1"):
-        for key, value, default, desc, critical in SEED_CONFIG:
-            q("INSERT INTO app_config VALUES(?,?,?,?,?,'system',?)",
-              (key, value, default, desc, critical, now()))
+    # Config is upserted every boot, not seeded once: a running deployment
+    # must pick up newly-introduced keys without losing edited values.
+    for key, value, default, desc, critical in SEED_CONFIG:
+        q("""INSERT INTO app_config(key,value,default_value,description,critical,updated_by,updated_at)
+             VALUES(?,?,?,?,?,'system',?)
+             ON CONFLICT(key) DO UPDATE SET
+               default_value=excluded.default_value,
+               description=excluded.description,
+               critical=excluded.critical""",
+          (key, value, default, desc, critical, now()))
+    # Voyage/embeddings belonged to the cut Tier 1 corpus path — make sure no
+    # stale key rows survive from an earlier build.
+    q("DELETE FROM app_config WHERE key LIKE 'embedding%'")
     if not q("SELECT 1 FROM access_requests LIMIT 1"):
         q("INSERT INTO access_requests(name,email,reg,council,specialty,institution,status,created_at) "
           "VALUES(?,?,?,?,?,?, 'pending', ?)",
@@ -474,13 +487,22 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
 
         # ---------- Tier 3 / withheld ----------
         if not answered_t2:
-            if high_stakes:
-                yield sse("stage", {"label": "High-stakes query — withholding unverified answer"})
+            tier3_enabled = cfg("answers.allow_tier3", "true") == "true"
+            if high_stakes or not tier3_enabled:
+                reason = "high_stakes" if high_stakes else "tier3_disabled"
+                yield sse("stage", {"label": "High-stakes query — withholding unverified answer"
+                                    if high_stakes else
+                                    "Grounded-only mode — no unverified answer shown"})
                 result.update({
-                    "tier": 3, "status": "not_found",
-                    "answer_text": "Not found in the indexed Indian literature. "
-                                   "This looks like a dosing or interaction question, so no "
-                                   "unverified general-model answer is shown.",
+                    "tier": 3, "status": "not_found", "withheld_reason": reason,
+                    "answer_text": (
+                        "Not found in the indexed Indian literature. "
+                        "This looks like a dosing or interaction question, so no "
+                        "unverified general-model answer is shown."
+                        if high_stakes else
+                        "Not found in the allowlisted Indian sources. Pramana is "
+                        "currently in grounded-only mode, so no unverified "
+                        "general-model answer is shown."),
                     "segments": [], "model_used": None,
                 })
             else:
@@ -720,6 +742,64 @@ def config_update(key: str, body: dict, user: dict = Depends(require_role("admin
     q("UPDATE app_config SET value=?, updated_by=?, updated_at=? WHERE key=?",
       (value, user["name"], now(), key))
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- admin: credentials
+#
+# Status only. Key material is NEVER accepted, stored, or returned here — it
+# lives in the platform secret store and reaches the process as an env var
+# (PRD §6.3/§7.8). This endpoint answers "will answers work?", nothing more.
+
+_probe_cache: dict = {"at": 0.0, "data": None}
+_PROBE_TTL = 60  # seconds
+
+
+def _probe_anthropic() -> dict:
+    """Cheap liveness check: resolve the configured model. No tokens billed."""
+    model = cfg("model.generation", "claude-opus-4-8")
+    judge = cfg("model.judge", "claude-haiku-4-5")
+    key_present = bool(os.environ.get("ANTHROPIC_API_KEY")
+                       or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+    out = {
+        "provider": "Anthropic",
+        "use": "Grounded web answers (Tier 2) + groundedness judge",
+        "env_var": "ANTHROPIC_API_KEY",
+        "configured": key_present,
+        "status": "not_configured",
+        "detail": "No API key is set. Answering questions will fail.",
+        "models": {"generation": model, "judge": judge},
+        "checked_at": now(),
+    }
+    if anthropic is None:
+        out["detail"] = "The anthropic SDK is not installed in this image."
+        return out
+    if not key_present:
+        return out
+    try:
+        client = anthropic.Anthropic()
+        got = client.models.retrieve(model)
+        out.update(status="connected",
+                   detail=f"Reached {getattr(got, 'display_name', model)}.")
+    except Exception as e:
+        name = type(e).__name__
+        out.update(
+            status="invalid" if "Auth" in name or "Permission" in name else "error",
+            detail=f"{name}: {str(e)[:160]}")
+    return out
+
+
+@app.get("/api/admin/credentials")
+def credentials(user: dict = Depends(require_role("admin"))):
+    if time.time() - _probe_cache["at"] > _PROBE_TTL or _probe_cache["data"] is None:
+        _probe_cache.update(at=time.time(), data=_probe_anthropic())
+    return {"providers": [_probe_cache["data"]],
+            "rotate_hint": "flyctl secrets set --app pramana ANTHROPIC_API_KEY='sk-ant-...'"}
+
+
+@app.post("/api/admin/credentials/recheck")
+def credentials_recheck(user: dict = Depends(require_role("admin"))):
+    _probe_cache.update(at=time.time(), data=_probe_anthropic())
+    return {"providers": [_probe_cache["data"]]}
 
 
 @app.get("/api/admin/audit")

@@ -51,10 +51,15 @@
       { key:'cost.daily_user_cap',    value:'40',                def:'50',              desc:'Per-doctor query cap per day.',            who:'A. Rao', when:'15 Jul 2026', critical:false },
       { key:'context.max_turns',      value:'6',                 def:'6',               desc:'Conversation depth resent per request.',   who:'system', when:'default',     critical:false },
     ],
-    keys:[
-      { provider:'Anthropic', use:'Generation + groundedness judge', hint:'sk-ant-··········a91f', rotated:'02 Jul 2026' },
-      { provider:'Voyage AI', use:'Embeddings (retrieval)',          hint:'pa-··········7c20',     rotated:'11 Jun 2026' },
-    ],
+    // Credential STATUS (never key material). Populated live in LIVE mode;
+    // the static demo shows a representative "not configured" state.
+    credentials:{ providers:[{
+      provider:'Anthropic',
+      use:'Grounded web answers (Tier 2) + groundedness judge',
+      env_var:'ANTHROPIC_API_KEY', configured:false, status:'not_configured',
+      detail:'No API key is set. Answering questions will fail.',
+      models:{ generation:'claude-opus-4-8', judge:'claude-haiku-4-5' },
+    }], rotate_hint:"flyctl secrets set --app pramana ANTHROPIC_API_KEY='sk-ant-...'" },
     audit:[
       { actor:'A. Rao',   action:'update',  change:'model.generation: sonnet-4 → sonnet-4.5',   when:'18 Jul, 14:22' },
       { actor:'A. Rao',   action:'update',  change:'retrieval.threshold: 0.75 → 0.78',          when:'19 Jul, 09:10' },
@@ -69,7 +74,7 @@
     allowlist:['Allowed websites','Tier 2 citation allowlist'],
     users:['Beta access','Who may sign in'],
     config:['Models & parameters','Runtime config-as-data'],
-    keys:['API keys','Provider secrets & rotation'],
+    keys:['Credentials','Provider status & rotation'],
     audit:['Audit log','All configuration mutations'],
   };
 
@@ -98,11 +103,13 @@
     state.audit = auditRows.map(a => ({ actor:a.actor, action:a.action,
       change:a.change, when:fmtT(a.created_at) }));
     if(isAdmin()){
-      const [users, requests] = await Promise.all([
+      const [users, requests, creds] = await Promise.all([
         PRAMANA_API.get('/api/admin/users'),
         PRAMANA_API.get('/api/admin/requests'),
+        PRAMANA_API.get('/api/admin/credentials').catch(() => null),
       ]);
       LIVEDATA.users = users; LIVEDATA.requests = requests;
+      if(creds) state.credentials = creds;
     }
   }
 
@@ -149,7 +156,7 @@
       ['allowlist','Allowed websites', String(state.domains.length)],
       ['users','Beta access', pending ? String(pending) : String(usersData().length)],
       ['config','Models & config',''],
-      ['keys','API keys',''],
+      ['keys','Credentials',''],
       ['audit','Audit log',''],
     ].filter(([id]) => isAdmin() || !ADMIN_ONLY.includes(id));
     navEl.innerHTML = items.map(([id,label,count])=>`
@@ -430,6 +437,58 @@
     });
   }
 
+  /* ---------- safety switches (boolean config, surfaced prominently) ---------- */
+  const SWITCHES = [
+    { key:'answers.allow_tier3', label:'Serve unverified answers (Tier 3)',
+      on:'Questions with no grounded source get a clearly-labelled general-model answer.',
+      off:'<b>Grounded-only mode.</b> Ungrounded questions return an honest not-found — no unverified answer is ever shown.',
+      danger:true },
+    { key:'groundedness.judge', label:'Groundedness judge',
+      on:'A second model verifies that cited passages support each claim before an answer is served.',
+      off:'<b>Judge disabled.</b> Answers are served on citation presence alone — “cited but wrong” can slip through.',
+      danger:true },
+  ];
+
+  function renderSwitches(){
+    const rows = SWITCHES.map(s => {
+      const row = state.config.find(c => c.key === s.key);
+      if(!row) return '';
+      const on = String(row.value) === 'true';
+      return `
+        <div class="switch-row ${on?'':'switch-off'}">
+          <div class="switch-main">
+            <div class="switch-label">${esc(s.label)}
+              ${!on && s.danger ? '<span class="switch-flag">changed</span>' : ''}</div>
+            <div class="switch-desc">${on ? s.on : s.off}</div>
+          </div>
+          <button class="toggle ${on?'on':''}" data-switch="${esc(s.key)}" role="switch"
+            aria-checked="${on}" aria-label="${esc(s.label)}"
+            ${live()&&isAdmin()?'':'disabled title="Admin only"'}><span class="knob"></span></button>
+        </div>`;
+    }).join('');
+    return rows ? `
+      <div class="switch-panel">
+        <div class="block-title">${svg('warn',{w:13,sw:2})}Safety switches</div>
+        ${rows}
+      </div>` : '';
+  }
+
+  function wireSwitches(){
+    viewEl.querySelectorAll('[data-switch]').forEach(el =>
+      el.addEventListener('click', () => {
+        if(el.disabled) return;
+        const key = el.getAttribute('data-switch');
+        const row = state.config.find(c => c.key === key);
+        const next = String(row.value) === 'true' ? 'false' : 'true';
+        const meta = SWITCHES.find(s => s.key === key);
+        // Turning a safety switch OFF is the consequential direction.
+        if(next === 'false' && meta.danger &&
+           !confirm(`Turn off “${meta.label}”?\n\n${meta.off.replace(/<[^>]+>/g,'')}\n\nThis applies to every user immediately.`)) return;
+        mutate(() => PRAMANA_API.patch('/api/admin/config/' + encodeURIComponent(key),
+                                       { value: next, confirmed: true }));
+      }));
+  }
+
   /* ---------- config ---------- */
   function renderConfig(){
     viewEl.innerHTML = `
@@ -440,6 +499,8 @@
         ${svg('warn',{w:15,sw:2,stroke:'#8a5a3c'})}
         <p>Changes apply <b>globally and immediately</b> — there is no staged rollout in v1. Editing <code>model.generation</code> requires confirmation.</p>
       </div>
+
+      ${renderSwitches()}
 
       <div class="tbl" style="margin-top:16px;">
         <div class="tbl-head cols-config"><div>Key</div><div>Value</div><div class="cell-default">Default</div><div>Description</div><div class="cell-who-wrap">Last changed</div></div>
@@ -453,6 +514,8 @@
           </div>`).join('')}
       </div>
       ${live()&&!isAdmin()?'<div class="rail-note" style="margin-top:10px;">Config is read-only for editors.</div>':''}`;
+
+    wireSwitches();
 
     // LIVE + admin: click-to-edit; critical keys require an explicit confirm.
     if(live() && isAdmin()){
@@ -480,39 +543,56 @@
   }
 
   /* ---------- keys ---------- */
+  /* Credential STATUS — deliberately read-only.
+     This UI never accepts or displays key material: a key pasted into a
+     browser form would have to be stored (database + backups) or guarded by
+     an even more powerful infra token, and it would make an admin-account
+     compromise a key compromise too. Keys stay in the platform secret store;
+     this screen answers "will answers work?" and how to rotate. */
   function renderKeys(){
+    const c = state.credentials || { providers:[] };
+    const LABEL = {
+      connected:     ['ok',   'Connected'],
+      not_configured:['warn', 'Not configured'],
+      invalid:       ['bad',  'Invalid key'],
+      error:         ['bad',  'Error'],
+    };
     viewEl.innerHTML = `
-      <div class="page-title">API keys</div>
-      <div class="page-lead">Key material lives in the secrets manager only — never in the database or this UI. Rotating writes a new value and hot-reloads the orchestrator. Admin only.</div>
+      <div class="page-title">Credentials</div>
+      <div class="page-lead">Live status of the provider credentials the orchestrator uses. Key material lives in the platform secret store only — it is never accepted, stored, or shown here (PRD §6.3).</div>
 
       <div class="keys-list">
-        ${state.keys.map((k,i)=>`
-          <div class="key-card">
+        ${c.providers.map(p => {
+          const [tone,label] = LABEL[p.status] || LABEL.error;
+          return `
+          <div class="key-card cred-card">
             <div class="key-info">
-              <div class="key-provider">${esc(k.provider)}</div>
-              <div class="key-use">${esc(k.use)}</div>
+              <div class="key-provider">${esc(p.provider)} <span class="cred-dot ${tone}"></span><span class="cred-status ${tone}">${label}</span></div>
+              <div class="key-use">${esc(p.use)}</div>
+              <div class="cred-detail">${esc(p.detail||'')}</div>
+              ${p.models ? `<div class="cred-models">
+                 <span>generation <b>${esc(p.models.generation)}</b></span>
+                 <span>judge <b>${esc(p.models.judge)}</b></span>
+               </div>`:''}
             </div>
-            <div class="key-hint">${esc(k.hint)}</div>
-            <div class="key-rotated">Rotated<b>${esc(k.rotated)}</b></div>
-            <button class="rotate-btn" data-i="${i}">${svg('rotate',{w:12,sw:2})}Rotate</button>
-          </div>`).join('')}
-      </div>`;
+            <div class="key-rotated">Set via<b>${esc(p.env_var||'')}</b></div>
+          </div>`;}).join('')}
+      </div>
 
-    // Two-step rotate: first click arms a confirm, second performs it.
-    viewEl.querySelectorAll('.rotate-btn').forEach(el =>
-      el.addEventListener('click', () => {
-        const i = +el.getAttribute('data-i');
-        if(!el.classList.contains('confirming')){
-          el.classList.add('confirming');
-          el.innerHTML = `${svg('warn',{w:12,sw:2})}Confirm rotate?`;
-          setTimeout(()=>{ if(el.isConnected && el.classList.contains('confirming')){ el.classList.remove('confirming'); el.innerHTML = `${svg('rotate',{w:12,sw:2})}Rotate`; } }, 4000);
-          return;
-        }
-        const k = state.keys[i];
-        k.rotated = today();
-        logAudit('rotate', `key ${k.provider.toLowerCase().split(' ')[0]} rotated (value redacted)`);
-        renderKeys();
-      }));
+      <div class="cred-rotate">
+        <div class="block-title">${svg('rotate',{w:13,sw:2})}Rotate or set the key</div>
+        <p>Run this in your terminal — the platform restarts the app with the new value. Nothing is entered in this UI by design.</p>
+        <code class="cred-cmd">${esc(c.rotate_hint||'')}</code>
+      </div>
+      ${live()?`<button class="mini-btn ok" id="recheckBtn" style="margin-top:14px;">Re-check now</button>`:''}`;
+
+    const btn = viewEl.querySelector('#recheckBtn');
+    if(btn) btn.addEventListener('click', async () => {
+      btn.textContent = 'Checking…'; btn.disabled = true;
+      try { state.credentials = Object.assign({}, state.credentials,
+              await PRAMANA_API.post('/api/admin/credentials/recheck')); } catch(e){}
+      renderKeys();
+    });
   }
 
   /* ---------- audit ---------- */
