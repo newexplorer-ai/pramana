@@ -94,10 +94,49 @@ Configuration back-office for the beta, four views:
   appends a color-coded actor/action/change row, newest first, mirroring
   the Postgres-trigger audit design.
 
+## Authentication — Google Sign-In + admin allowlist
+
+`login.html` gates `app.html` (role ≥ clinician) and `admin.html` (role ≥
+editor) via a synchronous guard in each page's `<head>`. Roles:
+**clinician** (app only) < **editor** (＋ allowlist read/write, config read)
+< **admin** (everything, incl. Beta access and API keys) — per PRD §6.5.
+
+Who may sign in is maintained in **Admin → Beta access**: add/remove Google
+emails, change roles, enable/disable. Disabling revokes on the visitor's next
+page load; role changes apply live. Request-access submissions from the
+marketing site land in the same view's **Pending requests** queue, so
+*request → approve → sign in* is a closed loop. Every mutation is audit-logged
+against the real signed-in actor. Admins cannot disable or demote themselves.
+
+### Enabling real Google Sign-In
+
+Set `GOOGLE_CLIENT_ID` in [`js/auth.js`](js/auth.js) to a Web OAuth client ID
+(console.cloud.google.com → APIs & Services → Credentials), and add your
+origins to *Authorised JavaScript origins*:
+`https://newexplorer-ai.github.io` and `http://localhost:4173`.
+While it is empty the login page runs a clearly-labelled **demo mode** that
+simulates sign-in so the flow stays testable.
+
+### ⚠ This is a gate, not a security boundary
+
+The allowlist is enforced **in the browser** and can be bypassed by anyone
+technical. That is acceptable only because everything behind it is mock data.
+Before a real corpus, real API keys, or real users exist:
+
+1. Verify the Google ID token signature **server-side** (Supabase Auth or a
+   FastAPI `/auth/google` endpoint) — the client never decides authenticity.
+2. Move the allowlist to Postgres `allowed_users` + RLS, re-checked on every
+   request.
+3. Delete demo mode and the `localStorage` stores.
+
+The single swap point is `verifyAndAuthorize()` in `js/auth.js`.
+
 ## Files
 
 - `index.html` + `css/site.css` + `js/site.js` — marketing home (hero, tiers,
   citation demo, FAQ accordion, request-access modal → waitlist)
+- `login.html` + `css/login.css` + `js/login.js` — Google Sign-In / demo picker
+- `js/auth.js` — session, allowlist, roles, route guard (**the auth core**)
 - `mobile.html` — mobile-frame flow (top bar, viewport, composer, overlay)
 - `app.html` — desktop app: Ask · Conversation (3 tiers + withheld) · Library · Sources
 - `admin.html` — admin portal (allowlist, config, keys, audit)

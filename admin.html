@@ -10,6 +10,8 @@
 <link rel="stylesheet" href="css/styles.css">
 <link rel="stylesheet" href="css/app.css">
 <link rel="stylesheet" href="css/admin.css">
+<script src="js/auth.js?v=1"></script>
+<script>PRAMANA_AUTH.guard('editor');</script>
 </head>
 <body class="apppage adminpage">
   <div class="shell">
@@ -31,11 +33,14 @@
         Back to app
       </button>
       <div class="side-user" style="cursor:default;">
-        <span class="avatar">AR</span>
-        <span>
-          <span class="side-user-name">Dr. A. Rao</span><br>
-          <span class="side-user-meta">Admin · 2FA on</span>
+        <span class="avatar" id="meAvatar">–</span>
+        <span style="flex:1;min-width:0;">
+          <span class="side-user-name" id="meName">—</span><br>
+          <span class="side-user-meta" id="meMeta">—</span>
         </span>
+        <button class="signout-btn" id="signOutBtn" title="Sign out" aria-label="Sign out">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M15 17l5-5-5-5M20 12H9M12 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6"/></svg>
+        </button>
       </div>
     </aside>
 

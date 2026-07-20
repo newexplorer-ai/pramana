@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — Pramana</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+<link rel="stylesheet" href="css/admin.css">
+<link rel="stylesheet" href="css/login.css">
+</head>
+<body class="loginpage">
+
+  <div class="login-wrap">
+    <div class="login-brand">
+      <div class="wordmark">Pramana</div>
+      <div class="tag">Indian Medical Literature</div>
+    </div>
+
+    <div id="demoBanner" hidden></div>
+
+    <div class="login-card">
+      <h1>Sign in</h1>
+      <p class="login-lead">Pramana is in closed beta. Sign in with the Google account you registered — access is limited to approved clinicians.</p>
+
+      <div id="alertSlot"></div>
+
+      <div class="gbtn-slot" id="gbtnSlot"></div>
+      <div id="demoSlot"></div>
+
+      <div class="login-note">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#35694e" stroke-width="2"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/></svg>
+        <span>We only read your name, email, and profile picture. Pramana never posts to your Google account and stores no patient data.</span>
+      </div>
+
+      <div class="login-foot">
+        Not on the beta yet? <a href="index.html#request">Request access →</a>
+      </div>
+    </div>
+
+    <p class="login-legal">A literature reference tool — not medical advice.<br>By signing in you accept the terms and the DPDP notice.</p>
+  </div>
+
+  <script src="js/auth.js?v=1"></script>
+  <script src="js/login.js?v=1"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</body>
+</html>

@@ -54,16 +54,21 @@
       if(!valid) ok = false;
     });
     if(!ok) return;
-    // production: POST → waitlist table for manual approval (PRD §5)
+    // production: POST → waitlist table for manual approval (PRD §5).
+    // Here it lands in the same store the admin portal's Beta access
+    // queue reads, so request → approve → sign in is a closed loop.
     try {
-      const list = JSON.parse(localStorage.getItem('pramana_waitlist')||'[]');
-      list.push({
+      const d = new Date();
+      const list = JSON.parse(localStorage.getItem('pramana_access_requests')||'[]');
+      list.unshift({
         name: fields.name.value.trim(), reg: fields.reg.value.trim(),
         council: document.getElementById('raCouncil').value,
         specialty: fields.spec.value.trim(), institution: fields.inst.value.trim(),
-        email: fields.email.value.trim(), at: new Date().toISOString(),
+        email: fields.email.value.trim().toLowerCase(),
+        at: `${d.getDate()} ${d.toLocaleString('en',{month:'short'})} ${d.getFullYear()}`,
+        status: 'pending',
       });
-      localStorage.setItem('pramana_waitlist', JSON.stringify(list));
+      localStorage.setItem('pramana_access_requests', JSON.stringify(list));
     } catch(err){ /* prototype storage only */ }
     formWrap.hidden = true; success.hidden = false;
   });

@@ -9,6 +9,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/styles.css">
 <link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/admin.css">
+<script src="js/auth.js?v=1"></script>
+<script>PRAMANA_AUTH.guard('clinician');</script>
 </head>
 <body class="apppage">
   <div class="shell">
@@ -38,13 +41,16 @@
       </nav>
       <div class="side-label">Recent</div>
       <div class="recents" id="recents"></div>
-      <button class="side-user" title="Settings — designed in a later screen">
-        <span class="avatar">AR</span>
-        <span>
-          <span class="side-user-name">Dr. A. Rao</span><br>
-          <span class="side-user-meta">Beta · Settings</span>
+      <div class="side-user">
+        <span class="avatar" id="meAvatar">–</span>
+        <span style="flex:1;min-width:0;">
+          <span class="side-user-name" id="meName">—</span><br>
+          <span class="side-user-meta" id="meMeta">—</span>
         </span>
-      </button>
+        <button class="signout-btn" id="signOutBtn" title="Sign out" aria-label="Sign out">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M15 17l5-5-5-5M20 12H9M12 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6"/></svg>
+        </button>
+      </div>
     </aside>
 
     <!-- CONVERSATION COLUMN -->

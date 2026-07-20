@@ -481,6 +481,26 @@
   document.getElementById('brandBtn').addEventListener('click', renderAsk);
   saveBtn.addEventListener('click', saveCurrent);
 
+  /* ---------- signed-in identity ---------- */
+  (function renderMe(){
+    const me = PRAMANA_AUTH.current();
+    if(!me) return;
+    document.getElementById('meAvatar').textContent = PRAMANA_AUTH.initials(me.name);
+    document.getElementById('meName').textContent  = me.name;
+    document.getElementById('meMeta').textContent  = 'Beta · ' + me.email;
+    // Admins and editors get a way into the configuration portal.
+    if(PRAMANA_AUTH.can('editor')){
+      const nav = document.querySelector('.side-nav');
+      const b = document.createElement('button');
+      b.className = 'nav-item';
+      b.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8M4.6 7a1.6 1.6 0 0 0 .3 1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>Admin`;
+      b.addEventListener('click', () => { window.location.href = 'admin.html'; });
+      nav.appendChild(b);
+    }
+  })();
+  document.getElementById('signOutBtn').addEventListener('click', () =>
+    PRAMANA_AUTH.signOut('login.html?signedout=1'));
+
   /* ---------- utils ---------- */
   function esc(s){ return String(s).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
   function truncate(s,n){ return s.length>n ? s.slice(0,n-1)+'…' : s; }

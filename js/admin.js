@@ -19,6 +19,7 @@
     config:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 0 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H1a2 2 0 0 1 0-4h.1A1.6 1.6 0 0 0 4.6 7"/>',
     keys:'<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9 2 2M16 7l2 2"/>',
     audit:'<path d="M9 5h9v14H6V5h3z"/><path d="M9 3h6v4H9zM9 11h6M9 15h4"/>',
+    users:'<circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.5a3 3 0 0 1 0 5.4M17.5 20a6 6 0 0 0-2-4.5"/>',
     plus:'<path d="M12 5v14M5 12h14"/>',
     search:'<circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/>',
     warn:'<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>',
@@ -66,16 +67,22 @@
 
   const TITLES = {
     allowlist:['Allowed websites','Tier 2 citation allowlist'],
+    users:['Beta access','Who may sign in'],
     config:['Models & parameters','Runtime config-as-data'],
     keys:['API keys','Provider secrets & rotation'],
     audit:['Audit log','All configuration mutations'],
   };
 
+  /* Views an editor may not open (PRD §6.5 — admin only). */
+  const ADMIN_ONLY = ['users','keys'];
+  const isAdmin = () => PRAMANA_AUTH.can('admin');
+
   /* Audit rows for new mutations, stamped with the current time. */
   function logAudit(action, change){
     const d = new Date();
     const when = `${d.getDate()} ${d.toLocaleString('en',{month:'short'})}, ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-    state.audit.unshift({ actor:'A. Rao', action, change, when });
+    const me = PRAMANA_AUTH.current();
+    state.audit.unshift({ actor: me ? me.name.replace(/^Dr\.?\s*/,'') : 'unknown', action, change, when });
   }
   function today(){
     const d = new Date();
@@ -86,12 +93,14 @@
      nav
      ============================================================ */
   function renderNav(){
+    const pending = PRAMANA_AUTH.requests().filter(r=>r.status==='pending').length;
     const items = [
       ['allowlist','Allowed websites', String(state.domains.length)],
+      ['users','Beta access', pending ? String(pending) : String(PRAMANA_AUTH.users().length)],
       ['config','Models & config',''],
       ['keys','API keys',''],
       ['audit','Audit log',''],
-    ];
+    ].filter(([id]) => isAdmin() || !ADMIN_ONLY.includes(id));
     navEl.innerHTML = items.map(([id,label,count])=>`
       <button class="nav-item spread ${state.view===id?'active':''}" data-view="${id}">
         <span class="nav-l">${svg(id)}${label}</span>
@@ -105,10 +114,13 @@
      views
      ============================================================ */
   function render(){
+    // An editor landing on an admin-only view falls back to the allowlist.
+    if(ADMIN_ONLY.includes(state.view) && !isAdmin()) state.view = 'allowlist';
     renderNav();
     const [t,s] = TITLES[state.view];
     titleEl.textContent = t; subEl.textContent = s;
-    ({allowlist:renderAllowlist, config:renderConfig, keys:renderKeys, audit:renderAudit})[state.view]();
+    ({allowlist:renderAllowlist, users:renderUsers, config:renderConfig,
+      keys:renderKeys, audit:renderAudit})[state.view]();
     scroll.scrollTop = 0;
   }
 
@@ -179,6 +191,152 @@
       state.domains.push({ domain, note, by:'Dr. A. Rao', date:today(), on:true });
       logAudit('create', `domain ${domain} added`);
       state.search = '';
+      render();
+    });
+  }
+
+  /* ---------- beta access (the sign-in allowlist) ---------- */
+  function renderUsers(){
+    const list = PRAMANA_AUTH.users();
+    const reqs = PRAMANA_AUTH.requests();
+    const pending = reqs.filter(r => r.status === 'pending');
+    const me = PRAMANA_AUTH.current();
+
+    viewEl.innerHTML = `
+      <div class="page-title">Beta access</div>
+      <div class="page-lead">Google accounts approved to sign in. Sign-in requires <b>both</b> a valid Google login <b>and</b> an enabled row here — disabling a row revokes access on their next page load.</div>
+
+      <div class="warn-banner">
+        ${svg('warn',{w:15,sw:2,stroke:'#8a5a3c'})}
+        <p>Access is enforced <b>in the browser</b> in this build. Before real corpus or key material is live, move this list to <code>allowed_users</code> with server-side verification (PRD §6.5).</p>
+      </div>
+
+      ${pending.length ? `
+      <div class="src-section-label" style="margin-top:22px;">Pending requests · ${pending.length}</div>
+      <div class="tbl" style="margin-top:10px;">
+        <div class="tbl-head cols-req"><div>Applicant</div><div>Registration</div><div>Institution</div><div style="text-align:right;">Decision</div></div>
+        ${pending.map(r=>{
+          const i = reqs.indexOf(r);
+          return `
+          <div class="tbl-row cols-req">
+            <div><div class="req-name">${esc(r.name)}</div><div class="req-email">${esc(r.email)}</div></div>
+            <div class="cell-by">${esc(r.reg||'—')}<div class="cell-date">${esc(r.council||'')}</div></div>
+            <div class="cell-note">${esc(r.institution||'—')}<div class="cell-date">${esc(r.specialty||'')}</div></div>
+            <div class="cell-end" style="gap:7px;">
+              <button class="mini-btn deny" data-deny="${i}">Deny</button>
+              <button class="mini-btn ok" data-approve="${i}">Approve</button>
+            </div>
+          </div>`;}).join('')}
+      </div>` : ''}
+
+      <div class="src-section-label" style="margin-top:${pending.length?'26px':'22px'};">Allowlist · ${list.length}</div>
+
+      <form class="add-form" id="addUserForm" autocomplete="off" style="margin-top:10px;">
+        <div class="field f-domain">
+          <span class="field-label">Google email</span>
+          <input class="mono" id="uEmail" type="email" placeholder="name@hospital.in" spellcheck="false">
+        </div>
+        <div class="field f-note">
+          <span class="field-label">Name</span>
+          <input id="uName" type="text" placeholder="Dr. …">
+        </div>
+        <div class="field">
+          <span class="field-label">Role</span>
+          <select id="uRole" class="role-select">
+            <option value="clinician">clinician</option>
+            <option value="editor">editor</option>
+            <option value="admin">admin</option>
+          </select>
+        </div>
+        <button class="add-btn" type="submit">${svg('plus',{w:13,sw:2.2,stroke:'#fff'})}Add</button>
+      </form>
+
+      <div class="tbl" style="margin-top:14px;">
+        <div class="tbl-head cols-users"><div>Email</div><div>Name</div><div>Role</div><div>Last sign-in</div><div style="text-align:right;">Enabled</div></div>
+        ${list.map((u,i)=>{
+          const self = me && me.email.toLowerCase() === u.email.toLowerCase();
+          return `
+          <div class="tbl-row cols-users ${u.enabled?'':'dim'}">
+            <div class="cell-domain">${esc(u.email)}${self?'<span class="you-tag">you</span>':''}</div>
+            <div class="cell-note">${esc(u.name)}<div class="cell-date">added by ${esc(u.by)} · ${esc(u.date)}</div></div>
+            <div>
+              <select class="role-select sm" data-role="${i}" ${self?'disabled title="You cannot change your own role"':''}>
+                ${['clinician','editor','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${r}</option>`).join('')}
+              </select>
+            </div>
+            <div class="cell-by">${esc(u.lastLogin||'never')}</div>
+            <div class="cell-end">
+              <button class="toggle ${u.enabled?'on':''}" data-user="${i}" role="switch" aria-checked="${u.enabled}"
+                ${self?'disabled title="You cannot disable your own access"':''} aria-label="Enable ${esc(u.email)}"><span class="knob"></span></button>
+            </div>
+          </div>`;}).join('')}
+      </div>`;
+
+    // approve / deny
+    viewEl.querySelectorAll('[data-approve]').forEach(el =>
+      el.addEventListener('click', () => {
+        const rs = PRAMANA_AUTH.requests();
+        const r  = rs[+el.getAttribute('data-approve')];
+        r.status = 'approved';
+        PRAMANA_AUTH.saveRequests(rs);
+        const us = PRAMANA_AUTH.users();
+        if(!us.some(u => u.email.toLowerCase() === r.email.toLowerCase())){
+          us.push({ email:r.email.toLowerCase(), name:r.name, role:'clinician', enabled:true,
+                    by:(PRAMANA_AUTH.current()||{}).name || 'admin', date:PRAMANA_AUTH.today() });
+          PRAMANA_AUTH.saveUsers(us);
+        }
+        logAudit('create', `beta access granted to ${r.email}`);
+        render();
+      }));
+    viewEl.querySelectorAll('[data-deny]').forEach(el =>
+      el.addEventListener('click', () => {
+        const rs = PRAMANA_AUTH.requests();
+        const r = rs[+el.getAttribute('data-deny')];
+        r.status = 'denied';
+        PRAMANA_AUTH.saveRequests(rs);
+        logAudit('disable', `beta request denied for ${r.email}`);
+        render();
+      }));
+
+    // enable / disable
+    viewEl.querySelectorAll('[data-user]').forEach(el =>
+      el.addEventListener('click', () => {
+        if(el.disabled) return;
+        const us = PRAMANA_AUTH.users();
+        const u = us[+el.getAttribute('data-user')];
+        u.enabled = !u.enabled;
+        PRAMANA_AUTH.saveUsers(us);
+        logAudit(u.enabled?'enable':'disable', `user ${u.email} → enabled:${u.enabled}`);
+        render();
+      }));
+
+    // role change
+    viewEl.querySelectorAll('[data-role]').forEach(el =>
+      el.addEventListener('change', () => {
+        const us = PRAMANA_AUTH.users();
+        const u = us[+el.getAttribute('data-role')];
+        const before = u.role;
+        u.role = el.value;
+        PRAMANA_AUTH.saveUsers(us);
+        logAudit('update', `user ${u.email}: role ${before} → ${u.role}`);
+        render();
+      }));
+
+    // add
+    viewEl.querySelector('#addUserForm').addEventListener('submit', e => {
+      e.preventDefault();
+      const eEl = viewEl.querySelector('#uEmail'), nEl = viewEl.querySelector('#uName');
+      const email = eEl.value.trim().toLowerCase(), name = nEl.value.trim();
+      let ok = true;
+      const dup = PRAMANA_AUTH.users().some(u => u.email.toLowerCase() === email);
+      if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || dup){ eEl.classList.add('invalid'); ok = false; } else eEl.classList.remove('invalid');
+      if(!name){ nEl.classList.add('invalid'); ok = false; } else nEl.classList.remove('invalid');
+      if(!ok) return;
+      const us = PRAMANA_AUTH.users();
+      us.push({ email, name, role: viewEl.querySelector('#uRole').value, enabled:true,
+                by:(PRAMANA_AUTH.current()||{}).name || 'admin', date:PRAMANA_AUTH.today() });
+      PRAMANA_AUTH.saveUsers(us);
+      logAudit('create', `beta access granted to ${email}`);
       render();
     });
   }
@@ -260,6 +418,18 @@
           </div>`).join('')}
       </div>`;
   }
+
+  /* ---------- signed-in identity ---------- */
+  (function renderMe(){
+    const me = PRAMANA_AUTH.current();
+    if(!me) return;
+    document.getElementById('meAvatar').textContent = PRAMANA_AUTH.initials(me.name);
+    document.getElementById('meName').textContent  = me.name;
+    document.getElementById('meMeta').textContent  =
+      me.role.charAt(0).toUpperCase() + me.role.slice(1) + ' · ' + me.email;
+  })();
+  document.getElementById('signOutBtn').addEventListener('click', () =>
+    PRAMANA_AUTH.signOut('login.html?signedout=1'));
 
   /* ---------- glue ---------- */
   document.getElementById('backApp').addEventListener('click', () => { window.location.href = 'app.html'; });
