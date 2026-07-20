@@ -97,7 +97,13 @@ Configuration back-office for the beta, four views:
 ## Authentication — Google Sign-In + admin allowlist
 
 `login.html` gates `app.html` (role ≥ clinician) and `admin.html` (role ≥
-editor) via a synchronous guard in each page's `<head>`. Roles:
+editor) via a synchronous guard in each page's `<head>`. After sign-in the
+user goes to whatever page they were trying to reach, or — if they came to
+the login page directly — to their role's landing page: **admins go straight
+to the admin portal**, everyone else to the app.
+
+The login page never lists accounts. It is a public page, so enumerating the
+allowlist there would leak every beta clinician's name and email. Roles:
 **clinician** (app only) < **editor** (＋ allowlist read/write, config read)
 < **admin** (everything, incl. Beta access and API keys) — per PRD §6.5.
 
@@ -115,7 +121,8 @@ Set `GOOGLE_CLIENT_ID` in [`js/auth.js`](js/auth.js) to a Web OAuth client ID
 origins to *Authorised JavaScript origins*:
 `https://newexplorer-ai.github.io` and `http://localhost:4173`.
 While it is empty the login page runs a clearly-labelled **demo mode** that
-simulates sign-in so the flow stays testable.
+simulates sign-in: it asks which email to continue as, rather than offering a
+menu of accounts, so it reveals nothing about who is on the allowlist.
 
 ### ⚠ This is a gate, not a security boundary
 

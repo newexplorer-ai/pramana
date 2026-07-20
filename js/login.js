@@ -1,24 +1,33 @@
 /* ============================================================
    Pramana — login screen controller
-   Real Google Sign-In when GOOGLE_CLIENT_ID is set; a clearly
-   labelled demo picker otherwise so the flow stays testable.
+   Real Google Sign-In when GOOGLE_CLIENT_ID is set.
+
+   The allowlist is NEVER enumerated here. A login screen is
+   public, so listing approved accounts would leak every beta
+   clinician's name and email to anyone who opens the page.
+   Demo mode therefore asks for an email rather than offering
+   a menu of accounts.
+
+   After sign-in the user goes to whatever they were trying to
+   reach, or to their role's landing page (admins → the portal).
    ============================================================ */
 (function(){
   'use strict';
 
   const A          = PRAMANA_AUTH;
   const params     = new URLSearchParams(location.search);
-  const next       = sanitizeNext(params.get('next'));
+  const wanted     = sanitizeNext(params.get('next'));   // null when not specified
   const alertSlot  = document.getElementById('alertSlot');
   const gbtnSlot   = document.getElementById('gbtnSlot');
   const demoSlot   = document.getElementById('demoSlot');
   const demoBanner = document.getElementById('demoBanner');
 
-  /* Only ever redirect to a local page — never to an attacker-supplied URL. */
+  /* Only ever redirect to a known local page — never to a supplied URL. */
   function sanitizeNext(v){
     const allowed = ['app.html','admin.html','mobile.html','index.html'];
-    return allowed.includes(v) ? v : 'app.html';
+    return allowed.includes(v) ? v : null;
   }
+  const destinationFor = session => wanted || A.landingFor(session.role);
 
   const ICON = {
     warn:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>',
@@ -30,10 +39,10 @@
     alertSlot.innerHTML = `<div class="login-alert ${kind}">${kind==='deny'?ICON.warn:ICON.info}<div>${html}</div></div>`;
   }
 
-  /* Already signed in and still authorised → go straight through. */
-  if(A.validate()){ location.replace(next); return; }
+  /* Already signed in and still authorised → straight through. */
+  const live = A.validate();
+  if(live){ location.replace(destinationFor(live)); return; }
 
-  /* Deep-linked denial reasons */
   if(params.get('denied') === 'role'){
     showAlert('deny', '<b>Admin access required.</b> Your account is signed in but does not have permission for that area. Ask an admin to raise your role.');
   } else if(params.get('signedout') === '1'){
@@ -45,7 +54,7 @@
     const result = A.verifyAndAuthorize(claims);
     if(result.ok){
       A.setSession(result.session);
-      location.replace(next);
+      location.replace(destinationFor(result.session));
       return;
     }
     const email = esc(result.email || 'this account');
@@ -59,9 +68,9 @@
         `<b>Access suspended.</b> <span class="mono">${email}</span> is on the allowlist but currently disabled. ` +
         `Contact your Pramana administrator.`);
     } else if(result.reason === 'unverified'){
-      showAlert('deny', `<b>Unverified Google account.</b> Verify your email with Google, then try again.`);
+      showAlert('deny', '<b>Unverified Google account.</b> Verify your email with Google, then try again.');
     } else {
-      showAlert('deny', `<b>Sign-in failed.</b> Please try again.`);
+      showAlert('deny', '<b>Sign-in failed.</b> Please try again.');
     }
   }
 
@@ -69,10 +78,7 @@
   function initGoogle(){
     google.accounts.id.initialize({
       client_id: A.GOOGLE_CLIENT_ID,
-      callback: resp => {
-        const claims = A.decodeIdToken(resp.credential);
-        handleClaims(claims);
-      },
+      callback: resp => handleClaims(A.decodeIdToken(resp.credential)),
       auto_select: false,
       cancel_on_tap_outside: true,
     });
@@ -83,13 +89,15 @@
     google.accounts.id.prompt();   // One Tap for returning users
   }
 
-  /* ---------- demo mode ---------- */
+  /* ---------- demo mode (no Google client configured) ----------
+     Asks which account to simulate. It does not reveal who is on
+     the allowlist — you must already know the address. */
   function initDemo(){
     demoBanner.hidden = false;
     demoBanner.className = 'demo-banner';
     demoBanner.innerHTML =
-      `<b>Demo mode — no Google client configured.</b> Sign-in is simulated so the flow can be tested. ` +
-      `Set <code>GOOGLE_CLIENT_ID</code> in <code>js/auth.js</code> to enable real Google Sign-In.`;
+      '<b>Demo mode — no Google client configured.</b> Sign-in is simulated. ' +
+      'Set <code>GOOGLE_CLIENT_ID</code> in <code>js/auth.js</code> to enable real Google Sign-In.';
 
     gbtnSlot.innerHTML =
       `<button class="gbtn" id="gDemo">
@@ -99,39 +107,27 @@
 
     document.getElementById('gDemo').addEventListener('click', () => {
       demoSlot.innerHTML = `
-        <div class="login-sep">choose a demo account</div>
-        <div class="demo-list">
-          ${A.users().map(u => `
-            <button class="demo-acct" data-email="${esc(u.email)}">
-              <span class="av">${esc(A.initials(u.name))}</span>
-              <span class="who">
-                <span class="nm">${esc(u.name)}</span>
-                <span class="em">${esc(u.email)}</span>
-              </span>
-              <span class="role-tag ${u.enabled?'role-'+esc(u.role):'role-off'}">${u.enabled?esc(u.role):'disabled'}</span>
-            </button>`).join('')}
-          <button class="demo-acct" data-email="outsider@example.com">
-            <span class="av">??</span>
-            <span class="who">
-              <span class="nm">Someone not on the list</span>
-              <span class="em">outsider@example.com</span>
-            </span>
-            <span class="role-tag role-off">not listed</span>
-          </button>
-        </div>`;
-      demoSlot.querySelectorAll('.demo-acct').forEach(el =>
-        el.addEventListener('click', () => {
-          const email = el.getAttribute('data-email');
-          const known = A.findUser(email);
-          // Simulates exactly what Google's ID token would carry.
-          handleClaims({ email, email_verified:true, name: known ? known.name : 'Unlisted User', picture:'' });
-        }));
+        <form class="demo-form" id="demoForm" autocomplete="off">
+          <label for="demoEmail">Continue as</label>
+          <input id="demoEmail" type="email" placeholder="you@hospital.in" spellcheck="false" autocomplete="off">
+          <button class="cta-mini" type="submit">Continue</button>
+        </form>`;
+      const input = document.getElementById('demoEmail');
+      input.focus();
+      document.getElementById('demoForm').addEventListener('submit', e => {
+        e.preventDefault();
+        const email = input.value.trim().toLowerCase();
+        if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ input.classList.add('invalid'); return; }
+        input.classList.remove('invalid');
+        const known = A.findUser(email);
+        // Mirrors exactly what a Google ID token would carry.
+        handleClaims({ email, email_verified:true, name: known ? known.name : email, picture:'' });
+      });
     });
   }
 
   /* ---------- boot ---------- */
   if(A.isConfigured){
-    // GIS script is async — wait for it.
     const start = Date.now();
     (function wait(){
       if(window.google && google.accounts && google.accounts.id) return initGoogle();

@@ -67,26 +67,21 @@ body.loginpage{
 .demo-banner b{font-weight:700;}
 .demo-banner code{font-family:var(--mono);font-size:10.5px;}
 
-/* demo account picker */
-.demo-list{margin-top:12px;display:flex;flex-direction:column;gap:7px;}
-.demo-acct{
-  display:flex;align-items:center;gap:11px;width:100%;text-align:left;cursor:pointer;
-  border:1px solid var(--line-2);background:var(--paper);border-radius:9px;padding:10px 12px;
-  font-family:inherit;transition:border-color .15s,background .15s;
+/* demo mode: type the account to simulate — never a list of accounts */
+.demo-form{margin-top:14px;display:flex;flex-direction:column;gap:7px;}
+.demo-form label{font-size:10.5px;font-weight:600;color:var(--muted-2);}
+.demo-form input{
+  border:1px solid var(--line-2);border-radius:8px;padding:10px 12px;font-family:var(--mono);
+  font-size:12.5px;color:var(--ink);background:var(--paper);outline:none;transition:border-color .15s;
 }
-.demo-acct:hover{border-color:#c9c3b7;background:var(--paper-soft);}
-.demo-acct .av{
-  width:30px;height:30px;border-radius:999px;background:#dcd6ea;color:#5a4b76;
-  font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;
+.demo-form input::placeholder{color:var(--faint-2);}
+.demo-form input:focus{border-color:var(--ink);}
+.demo-form input.invalid{border-color:#b4543e;}
+.cta-mini{
+  border:none;background:#111;color:#fff;border-radius:8px;padding:10px 14px;
+  font-family:inherit;font-size:12.5px;font-weight:600;cursor:pointer;transition:background .15s;
 }
-.demo-acct .who{flex:1;min-width:0;}
-.demo-acct .nm{font-size:12.5px;font-weight:600;color:var(--ink);}
-.demo-acct .em{font-size:10.5px;color:var(--faint-2);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.role-tag{font-size:9px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:2px 7px;border-radius:4px;flex:none;}
-.role-admin{background:var(--adm-bg,#f4ece4);color:var(--adm,#8a5a3c);border:1px solid var(--adm-br,#e6d6c6);}
-.role-editor{background:var(--t2-bg);color:var(--t2);border:1px solid var(--t2-br);}
-.role-clinician{background:var(--t1-bg);color:var(--t1);border:1px solid var(--t1-br);}
-.role-off{background:#f1efe9;color:var(--faint-2);border:1px solid var(--line);}
+.cta-mini:hover{background:#000;}
 
 /* signing-in state */
 .signing{display:flex;align-items:center;justify-content:center;gap:10px;padding:14px;font-size:12.5px;color:var(--muted-2);}

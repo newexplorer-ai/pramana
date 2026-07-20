@@ -158,12 +158,16 @@ const PRAMANA_AUTH = (function(){
   const initials = name => String(name||'?').replace(/^Dr\.?\s*/i,'')
     .split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase() || '?';
 
+  /* Where a role lands when it signs in without an explicit destination.
+     Admins run the configuration portal; everyone else answers questions. */
+  const landingFor = role => role === 'admin' ? 'admin.html' : 'app.html';
+
   return {
     GOOGLE_CLIENT_ID,
     isConfigured: !!GOOGLE_CLIENT_ID,
     ROLES,
     decodeIdToken, verifyAndAuthorize,
-    current, validate, setSession, signOut, can, guard, initials, today,
+    current, validate, setSession, signOut, can, guard, initials, today, landingFor,
     users, saveUsers, findUser,
     requests, saveRequests,
   };
