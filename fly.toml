@@ -1,7 +1,13 @@
 # Pramana — Fly.io app config.
-# Region: Mumbai (bom) to match the PRD's India data-residency intent (§7.9).
+#
+# ⚠ REGION IS SINGAPORE, NOT INDIA — REVISIT BEFORE REAL CLINICAL USE.
+# The PRD (§7.9) calls for an India region under DPDP. Fly had no volume
+# capacity in Mumbai (bom) at deploy time ("no capacity available in bom"),
+# so this beta runs in Singapore (sin), the nearest available region.
+# No patient-identifiable data is stored by design, but move to bom when
+# capacity frees up:  flyctl volumes create pramana_data --region bom ...
 app = "pramana"
-primary_region = "bom"
+primary_region = "sin"
 
 [build]
 
