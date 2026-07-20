@@ -105,12 +105,12 @@ CREATE TABLE IF NOT EXISTS saved_conversations(
   UNIQUE(user_email, conversation_id));
 """
 
+# The owner is the ONLY admin. Everyone else joins as a clinician via the
+# approval queue (or is added explicitly in Admin → Beta access).
 SEED_USERS = [
     ("k.prasad.iitr@gmail.com", "Dr. K. Prasad", "admin", 1, "system"),
-    ("a.rao@pramana.health", "Dr. A. Rao", "admin", 1, "system"),
-    ("s.menon@pramana.health", "Dr. S. Menon", "editor", 1, "system"),
-    ("r.iyer@aiims.edu", "Dr. R. Iyer", "clinician", 1, "system"),
-    ("p.nair@stjohns.in", "Dr. P. Nair", "clinician", 0, "system"),
+    ("r.iyer@aiims.edu", "Dr. R. Iyer", "clinician", 1, "system"),      # test account
+    ("p.nair@stjohns.in", "Dr. P. Nair", "clinician", 0, "system"),     # test account (disabled)
 ]
 SEED_DOMAINS = [
     ("icmr.gov.in", "Indian Council of Medical Research — apex national research & guideline body."),

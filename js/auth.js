@@ -43,12 +43,11 @@ const PRAMANA_AUTH = (function(){
 
   /* ---------- seed allowlist ----------
      Stands in for the `allowed_users` table. */
+  // The owner is the ONLY admin; everyone else is a clinician.
   const SEED_USERS = [
-    { email:'k.prasad.iitr@gmail.com', name:'Dr. K. Prasad', role:'admin',     enabled:true, by:'system',       date:'12 Jun 2026' },
-    { email:'a.rao@pramana.health',    name:'Dr. A. Rao',    role:'admin',     enabled:true, by:'system',       date:'12 Jun 2026' },
-    { email:'s.menon@pramana.health',  name:'Dr. S. Menon',  role:'editor',    enabled:true, by:'Dr. K. Prasad',date:'14 Jun 2026' },
-    { email:'r.iyer@aiims.edu',        name:'Dr. R. Iyer',   role:'clinician', enabled:true, by:'Dr. A. Rao',   date:'02 Jul 2026' },
-    { email:'p.nair@stjohns.in',       name:'Dr. P. Nair',   role:'clinician', enabled:false,by:'Dr. A. Rao',   date:'08 Jul 2026' },
+    { email:'k.prasad.iitr@gmail.com', name:'Dr. K. Prasad', role:'admin',     enabled:true, by:'system',        date:'12 Jun 2026' },
+    { email:'r.iyer@aiims.edu',        name:'Dr. R. Iyer',   role:'clinician', enabled:true, by:'Dr. K. Prasad', date:'02 Jul 2026' },
+    { email:'p.nair@stjohns.in',       name:'Dr. P. Nair',   role:'clinician', enabled:false,by:'Dr. K. Prasad', date:'08 Jul 2026' },
   ];
   const SEED_REQUESTS = [
     { name:'Dr. M. Banerjee', email:'m.banerjee@ipgmer.ac.in', reg:'71204', council:'West Bengal',

@@ -90,7 +90,7 @@
   }
 
   function setNav(mode){
-    document.querySelectorAll('#navAsk,#navLibrary,#navSources').forEach(el=>el&&el.classList.remove('active'));
+    document.querySelectorAll('#navAsk,#navLibrary').forEach(el=>el&&el.classList.remove('active'));
     const el = document.getElementById('nav'+mode.charAt(0).toUpperCase()+mode.slice(1));
     if(el) el.classList.add('active');
   }
@@ -459,42 +459,8 @@
     setTimeout(()=>{ saveBtn.textContent = 'Save'; }, 1800);
   }
 
-  /* ============================================================
-     Sources (PRD §4.4 — "what do you actually know?")
-     ============================================================ */
-  async function renderSources(){
-    clearTimers();
-    activeRecent = null; current = null;
-    mainTitle.textContent = 'Sources';
-    setNav('sources'); setStrip(null);
-    convoScroll.classList.remove('t3-bg');
-    let domains;
-    if(isLive()){
-      try { domains = (await PRAMANA_API.get('/api/sources'))
-              .map(d => ({ domain: d.domain, note: d.trust_note })); }
-      catch(e){ domains = ALLOWLIST_DOMAINS; }
-    } else {
-      domains = ALLOWLIST_DOMAINS;
-    }
-    convo.innerHTML = `
-      <div class="page-title" style="margin-top:6px;">What Pramana knows</div>
-      <div class="page-lead">Every grounded answer cites only these vetted Indian domains — the web allowlist maintained by the Pramana editorial team. Nothing else can be cited.</div>
-
-      <div class="src-section-label">Web allowlist · ${domains.length} domains</div>
-      <div class="tbl" style="margin-top:10px;">
-        ${domains.map(d=>`
-          <div class="tbl-row cols-allow">
-            <div class="cell-domain">${esc(d.domain)}</div>
-            <div class="cell-note">${esc(d.note)}</div>
-          </div>`).join('')}
-      </div>
-      <div style="height:24px;"></div>`;
-    convoScroll.scrollTop = 0;
-    railTitle.textContent = 'Sources';
-    railMode.textContent = 'Read-only';
-    railBody.innerHTML = `<div class="rail-note">Answers may only cite the allowlisted domains. Missing something? Ask a question about it — unanswered queries drive what gets added next.</div>`;
-    renderRecents();
-  }
+  /* The Sources screen was removed from the v1 UI (product call, Jul 2026).
+     The /api/sources endpoint and the admin allowlist remain untouched. */
 
   /* ============================================================
      LIVE mode — real answers from the orchestrator (SSE)
@@ -742,7 +708,6 @@
   document.getElementById('newQBtn').addEventListener('click', renderAsk);
   document.getElementById('navAsk').addEventListener('click', renderAsk);
   document.getElementById('navLibrary').addEventListener('click', renderLibrary);
-  document.getElementById('navSources').addEventListener('click', renderSources);
   document.getElementById('brandBtn').addEventListener('click', renderAsk);
   saveBtn.addEventListener('click', saveCurrent);
 
