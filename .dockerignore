@@ -1,0 +1,6 @@
+server/.venv/
+server/pramana.db*
+.git/
+.claude/
+node_modules/
+*.md

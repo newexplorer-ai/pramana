@@ -76,6 +76,8 @@
         `Contact your Pramana administrator.`);
     } else if(reason === 'unverified'){
       showAlert('deny', '<b>Unverified Google account.</b> Verify your email with Google, then try again.');
+    } else if(reason === 'demo_password_required'){
+      showAlert('deny', '<b>Wrong access code.</b> Ask your Pramana administrator for the beta access code.');
     } else {
       showAlert('deny', '<b>Sign-in failed.</b> Please try again.');
     }
@@ -84,7 +86,9 @@
   function handleClaims(claims){
     // LIVE mode never trusts client-side claims — it posts to the server.
     if(PRAMANA_API.on){
-      serverLogin('/api/auth/demo', { email: claims.email }, claims.email);
+      const pw = document.getElementById('demoPassword');
+      serverLogin('/api/auth/demo',
+        { email: claims.email, password: pw ? pw.value : undefined }, claims.email);
       return;
     }
     const result = A.verifyAndAuthorize(claims);
@@ -139,9 +143,17 @@
   function initDemo(){
     demoBanner.hidden = false;
     demoBanner.className = 'demo-banner';
-    demoBanner.innerHTML =
-      '<b>Demo mode — no Google client configured.</b> Sign-in is simulated. ' +
-      'Set <code>GOOGLE_CLIENT_ID</code> in <code>js/auth.js</code> to enable real Google Sign-In.';
+    // A public deployment gates demo sign-in behind a shared access code.
+    const needsCode = PRAMANA_API.on && PRAMANA_API.health.demo_password;
+
+    demoBanner.hidden = false;
+    demoBanner.className = 'demo-banner';
+    demoBanner.innerHTML = needsCode
+      ? '<b>Closed beta — access code required.</b> Sign in with your approved ' +
+        'email and the code your administrator gave you. Google Sign-In arrives once ' +
+        'the OAuth client is configured.'
+      : '<b>Demo mode — no Google client configured.</b> Sign-in is simulated. ' +
+        'Set <code>GOOGLE_CLIENT_ID</code> to enable real Google Sign-In.';
 
     gbtnSlot.innerHTML =
       `<button class="gbtn" id="gDemo">
@@ -154,6 +166,9 @@
         <form class="demo-form" id="demoForm" autocomplete="off">
           <label for="demoEmail">Continue as</label>
           <input id="demoEmail" type="email" placeholder="you@hospital.in" spellcheck="false" autocomplete="off">
+          ${needsCode ? `
+          <label for="demoPassword" style="margin-top:6px;">Beta access code</label>
+          <input id="demoPassword" type="password" placeholder="Shared code" autocomplete="off">` : ''}
           <button class="cta-mini" type="submit">Continue</button>
         </form>`;
       const input = document.getElementById('demoEmail');

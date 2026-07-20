@@ -40,6 +40,9 @@ except ImportError:  # surfaced as a 503 at ask-time
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = os.environ.get("PRAMANA_DB", str(ROOT / "server" / "pramana.db"))
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+# On a public host, demo sign-in must not be an open door: when this is set,
+# demo login additionally requires the shared beta access code.
+DEMO_PASSWORD = os.environ.get("PRAMANA_DEMO_PASSWORD", "")
 
 app = FastAPI(title="Pramana API")
 
@@ -201,6 +204,7 @@ def require_role(min_role: str):
 @app.get("/api/health")
 def health():
     return {"ok": True, "google_auth": bool(GOOGLE_CLIENT_ID),
+            "demo_password": bool(DEMO_PASSWORD),
             "anthropic": bool(anthropic and (os.environ.get("ANTHROPIC_API_KEY")
                                              or os.environ.get("ANTHROPIC_AUTH_TOKEN")))}
 
@@ -241,6 +245,9 @@ def auth_demo(body: dict):
     """Simulated sign-in — only available while no Google client is configured."""
     if GOOGLE_CLIENT_ID:
         raise HTTPException(400, "demo_disabled")
+    if DEMO_PASSWORD and not secrets.compare_digest(
+            str(body.get("password", "")), DEMO_PASSWORD):
+        raise HTTPException(403, "demo_password_required")
     email = str(body.get("email", "")).strip().lower()
     if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
         raise HTTPException(400, "invalid_email")
