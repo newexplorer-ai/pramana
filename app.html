@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pramana — Conversation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body class="apppage">
+  <div class="shell">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <div class="side-top">
+        <button class="side-brand" id="brandBtn">Pramana</button>
+        <button class="side-search" title="Search" aria-label="Search">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+        </button>
+      </div>
+      <button class="new-q" id="newQBtn">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
+        New question
+      </button>
+      <nav class="side-nav">
+        <button class="nav-item" id="navAsk">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg>Ask
+        </button>
+        <button class="nav-item" id="navLibrary">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 4h11a2 2 0 0 1 2 2v14l-7-4-6 4V4z"/></svg>Library
+        </button>
+        <button class="nav-item" id="navSources">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M6 3v16"/></svg>Sources
+        </button>
+      </nav>
+      <div class="side-label">Recent</div>
+      <div class="recents" id="recents"></div>
+      <button class="side-user" title="Settings — designed in a later screen">
+        <span class="avatar">AR</span>
+        <span>
+          <span class="side-user-name">Dr. A. Rao</span><br>
+          <span class="side-user-meta">Beta · Settings</span>
+        </span>
+      </button>
+    </aside>
+
+    <!-- CONVERSATION COLUMN -->
+    <section class="main">
+      <div class="main-head">
+        <div class="main-title" id="mainTitle">Type 2 diabetes — first-line management</div>
+        <div class="main-head-actions"><span id="saveBtn">Save</span><span>Share</span></div>
+      </div>
+      <div class="disclaimer">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9a9892" stroke-width="2"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/></svg>
+        <span>Literature reference tool — not medical advice. Does not replace clinical judgment.</span>
+      </div>
+      <div class="tier-strip" id="tierStrip" hidden></div>
+      <div class="convo-scroll" id="convoScroll">
+        <div class="convo" id="convo"></div>
+      </div>
+      <div class="main-composer">
+        <div class="qwrap">
+          <form class="qbar" id="qform" autocomplete="off">
+            <input class="qinput" id="qinput" type="text" placeholder="Ask a follow-up…" aria-label="Ask a question">
+            <button class="send-btn" id="sendBtn" type="submit" aria-label="Send">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+            </button>
+          </form>
+        </div>
+        <p class="composer-note">Do not enter patient-identifiable information.</p>
+      </div>
+    </section>
+
+    <!-- SOURCES RAIL -->
+    <aside class="rail">
+      <div class="rail-head">
+        <div class="rail-title" id="railTitle">Sources · 0</div>
+        <span class="rail-mode" id="railMode">Grounded</span>
+      </div>
+      <div class="rail-body" id="railBody"></div>
+    </aside>
+
+  </div>
+
+  <script src="js/data.js?v=2"></script>
+  <script src="js/desktop.js?v=2"></script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pramana — Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/admin.css">
+</head>
+<body class="apppage adminpage">
+  <div class="shell">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <div class="side-top admin">
+        <a class="side-brand" href="app.html" style="text-decoration:none;">Pramana</a>
+        <span class="admin-badge">Admin</span>
+      </div>
+
+      <div class="side-label" style="padding-top:4px;">Configuration</div>
+      <nav class="side-nav" id="adminNav"></nav>
+
+      <div style="flex:1;"></div>
+
+      <button class="back-app" id="backApp">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M11 5l-7 7 7 7M4 12h16"/></svg>
+        Back to app
+      </button>
+      <div class="side-user" style="cursor:default;">
+        <span class="avatar">AR</span>
+        <span>
+          <span class="side-user-name">Dr. A. Rao</span><br>
+          <span class="side-user-meta">Admin · 2FA on</span>
+        </span>
+      </div>
+    </aside>
+
+    <!-- MAIN -->
+    <section class="admin-main">
+      <div class="admin-head">
+        <div class="admin-head-l">
+          <span class="admin-title" id="adminTitle">Allowed websites</span>
+          <span class="admin-sub" id="adminSub">Tier 2 citation allowlist</span>
+        </div>
+        <span class="live-pip">Live · ap-south-1</span>
+      </div>
+      <div class="admin-scroll" id="adminScroll">
+        <div class="admin-wrap" id="adminView"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <script src="js/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pramana — Cited Indian Medical Literature Q&A</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <div class="stage">
+    <!-- App device frame -->
+    <div class="app" id="app" role="application" aria-label="Pramana">
+      <!-- Top bar -->
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-name">Pramana</span>
+          <span class="brand-tag">Indian Medical Literature</span>
+        </div>
+        <div class="topbar-right" id="topbarRight" hidden>
+          <button class="icon-btn" id="newChatBtn" title="New question" aria-label="New question">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Screens mount here -->
+      <main class="viewport" id="viewport"></main>
+
+      <!-- Composer (input) — shared, shown on home & answer -->
+      <footer class="composer" id="composer" hidden>
+        <form class="qbar" id="qform" autocomplete="off">
+          <input class="qinput" id="qinput" type="text" placeholder="Ask a clinical question…" aria-label="Ask a clinical question">
+          <button class="send-btn" id="sendBtn" type="submit" aria-label="Send">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+          </button>
+        </form>
+        <p class="composer-note">Do not enter patient-identifiable information.</p>
+      </footer>
+    </div>
+
+    <!-- Citation overlay -->
+    <div class="overlay" id="overlay" hidden>
+      <div class="overlay-scrim" data-close></div>
+      <aside class="citation-panel" id="citationPanel" role="dialog" aria-modal="true" aria-label="Citation"></aside>
+    </div>
+  </div>
+
+  <script src="js/data.js?v=2"></script>
+  <script src="js/app.js?v=2"></script>
+</body>
+</html>
