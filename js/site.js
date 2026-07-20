@@ -54,9 +54,19 @@
       if(!valid) ok = false;
     });
     if(!ok) return;
-    // production: POST → waitlist table for manual approval (PRD §5).
-    // Here it lands in the same store the admin portal's Beta access
-    // queue reads, so request → approve → sign in is a closed loop.
+    // LIVE mode: the request lands in the server's access_requests table,
+    // which feeds the admin portal's approval queue.
+    if (window.PRAMANA_API && PRAMANA_API.on) {
+      PRAMANA_API.post('/api/request-access', {
+        name: fields.name.value.trim(), reg: fields.reg.value.trim(),
+        council: document.getElementById('raCouncil').value,
+        specialty: fields.spec.value.trim(), institution: fields.inst.value.trim(),
+        email: fields.email.value.trim().toLowerCase(),
+      }).then(() => { formWrap.hidden = true; success.hidden = false; })
+        .catch(() => { formWrap.hidden = true; success.hidden = false; });
+      return;
+    }
+    // DEMO mode (static hosting): browser-local store only.
     try {
       const d = new Date();
       const list = JSON.parse(localStorage.getItem('pramana_access_requests')||'[]');

@@ -136,6 +136,8 @@ body.adminpage{background:#fff;background-image:none;overflow:hidden;}
   background:#f6f5f2;border:1px solid var(--line);border-radius:6px;padding:5px 8px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
+.cell-value.editable{cursor:pointer;transition:border-color .15s;}
+.cell-value.editable:hover{border-color:var(--ink);}
 .cell-default{font-family:var(--mono);font-size:11px;color:#a5a29a;}
 .cell-desc{font-size:11.5px;line-height:1.45;color:var(--muted);}
 .cell-who{font-size:10.5px;color:var(--faint-2);}

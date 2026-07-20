@@ -77,12 +77,63 @@
   const ADMIN_ONLY = ['users','keys'];
   const isAdmin = () => PRAMANA_AUTH.can('admin');
 
+  /* ---------- LIVE mode (backend present): server owns all data ---------- */
+  const live = () => PRAMANA_API.on;
+  const LIVEDATA = { users:[], requests:[] };
+  const fmtD = iso => { const d = new Date(iso); return isNaN(d) ? (iso||'') :
+    `${d.getDate()} ${d.toLocaleString('en',{month:'short'})} ${d.getFullYear()}`; };
+  const fmtT = iso => { const d = new Date(iso); return isNaN(d) ? (iso||'') :
+    `${d.getDate()} ${d.toLocaleString('en',{month:'short'})}, ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
+
+  async function loadLive(){
+    const [domains, config, auditRows] = await Promise.all([
+      PRAMANA_API.get('/api/admin/domains'),
+      PRAMANA_API.get('/api/admin/config'),
+      PRAMANA_API.get('/api/admin/audit'),
+    ]);
+    state.domains = domains.map(d => ({ domain:d.domain, note:d.trust_note,
+      by:d.added_by||'—', date:fmtD(d.created_at), on:!!d.enabled }));
+    state.config = config.map(c => ({ key:c.key, value:c.value, def:c.default_value,
+      desc:c.description, who:c.updated_by||'—', when:fmtD(c.updated_at), critical:!!c.critical }));
+    state.audit = auditRows.map(a => ({ actor:a.actor, action:a.action,
+      change:a.change, when:fmtT(a.created_at) }));
+    if(isAdmin()){
+      const [users, requests] = await Promise.all([
+        PRAMANA_API.get('/api/admin/users'),
+        PRAMANA_API.get('/api/admin/requests'),
+      ]);
+      LIVEDATA.users = users; LIVEDATA.requests = requests;
+    }
+  }
+
+  /* Shape adapters so the view code renders identically in both modes. */
+  function usersData(){
+    return live()
+      ? LIVEDATA.users.map(u => ({ email:u.email, name:u.name, role:u.role,
+          enabled:!!u.enabled, by:u.added_by||'—', date:fmtD(u.created_at),
+          lastLogin:u.last_login }))
+      : PRAMANA_AUTH.users();
+  }
+  function requestsPending(){
+    return live()
+      ? LIVEDATA.requests.map(r => ({ ...r, at:fmtD(r.created_at) }))
+      : PRAMANA_AUTH.requests().filter(r => r.status === 'pending');
+  }
+
   /* Audit rows for new mutations, stamped with the current time. */
   function logAudit(action, change){
+    if(live()) return;   // the server writes the audit trail in LIVE mode
     const d = new Date();
     const when = `${d.getDate()} ${d.toLocaleString('en',{month:'short'})}, ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
     const me = PRAMANA_AUTH.current();
     state.audit.unshift({ actor: me ? me.name.replace(/^Dr\.?\s*/,'') : 'unknown', action, change, when });
+  }
+
+  /* Run a LIVE mutation, then refresh all data and re-render. */
+  async function mutate(fn){
+    try { await fn(); } catch(e){ console.warn('admin mutation failed', e); }
+    try { await loadLive(); } catch(e){}
+    render();
   }
   function today(){
     const d = new Date();
@@ -93,10 +144,10 @@
      nav
      ============================================================ */
   function renderNav(){
-    const pending = PRAMANA_AUTH.requests().filter(r=>r.status==='pending').length;
+    const pending = requestsPending().length;
     const items = [
       ['allowlist','Allowed websites', String(state.domains.length)],
-      ['users','Beta access', pending ? String(pending) : String(PRAMANA_AUTH.users().length)],
+      ['users','Beta access', pending ? String(pending) : String(usersData().length)],
       ['config','Models & config',''],
       ['keys','API keys',''],
       ['audit','Audit log',''],
@@ -166,6 +217,11 @@
     viewEl.querySelectorAll('.toggle').forEach(el =>
       el.addEventListener('click', () => {
         const r = state.domains[+el.getAttribute('data-i')];
+        if(live()){
+          mutate(() => PRAMANA_API.patch('/api/admin/domains/' + encodeURIComponent(r.domain),
+                                         { enabled: !r.on }));
+          return;
+        }
         r.on = !r.on;
         logAudit(r.on?'enable':'disable', `domain ${r.domain} → enabled:${r.on}`);
         render();
@@ -188,18 +244,22 @@
       if(!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(domain) || state.domains.some(r=>r.domain===domain)){ dEl.classList.add('invalid'); ok=false; } else dEl.classList.remove('invalid');
       if(!note){ nEl.classList.add('invalid'); ok=false; } else nEl.classList.remove('invalid');
       if(!ok) return;
+      state.search = '';
+      if(live()){
+        mutate(() => PRAMANA_API.post('/api/admin/domains', { domain, trust_note: note }));
+        return;
+      }
       state.domains.push({ domain, note, by:'Dr. A. Rao', date:today(), on:true });
       logAudit('create', `domain ${domain} added`);
-      state.search = '';
       render();
     });
   }
 
   /* ---------- beta access (the sign-in allowlist) ---------- */
   function renderUsers(){
-    const list = PRAMANA_AUTH.users();
-    const reqs = PRAMANA_AUTH.requests();
-    const pending = reqs.filter(r => r.status === 'pending');
+    const list = usersData();
+    const reqs = live() ? [] : PRAMANA_AUTH.requests();
+    const pending = requestsPending();
     const me = PRAMANA_AUTH.current();
 
     viewEl.innerHTML = `
@@ -275,8 +335,14 @@
     // approve / deny
     viewEl.querySelectorAll('[data-approve]').forEach(el =>
       el.addEventListener('click', () => {
+        const i = +el.getAttribute('data-approve');
+        if(live()){
+          mutate(() => PRAMANA_API.post('/api/admin/requests/' + pending[i].id,
+                                        { decision:'approve' }));
+          return;
+        }
         const rs = PRAMANA_AUTH.requests();
-        const r  = rs[+el.getAttribute('data-approve')];
+        const r  = rs[i];
         r.status = 'approved';
         PRAMANA_AUTH.saveRequests(rs);
         const us = PRAMANA_AUTH.users();
@@ -290,8 +356,14 @@
       }));
     viewEl.querySelectorAll('[data-deny]').forEach(el =>
       el.addEventListener('click', () => {
+        const i = +el.getAttribute('data-deny');
+        if(live()){
+          mutate(() => PRAMANA_API.post('/api/admin/requests/' + pending[i].id,
+                                        { decision:'deny' }));
+          return;
+        }
         const rs = PRAMANA_AUTH.requests();
-        const r = rs[+el.getAttribute('data-deny')];
+        const r = rs[i];
         r.status = 'denied';
         PRAMANA_AUTH.saveRequests(rs);
         logAudit('disable', `beta request denied for ${r.email}`);
@@ -302,8 +374,14 @@
     viewEl.querySelectorAll('[data-user]').forEach(el =>
       el.addEventListener('click', () => {
         if(el.disabled) return;
+        const i = +el.getAttribute('data-user');
+        if(live()){
+          mutate(() => PRAMANA_API.patch('/api/admin/users/' + encodeURIComponent(list[i].email),
+                                         { enabled: !list[i].enabled }));
+          return;
+        }
         const us = PRAMANA_AUTH.users();
-        const u = us[+el.getAttribute('data-user')];
+        const u = us[i];
         u.enabled = !u.enabled;
         PRAMANA_AUTH.saveUsers(us);
         logAudit(u.enabled?'enable':'disable', `user ${u.email} → enabled:${u.enabled}`);
@@ -313,8 +391,14 @@
     // role change
     viewEl.querySelectorAll('[data-role]').forEach(el =>
       el.addEventListener('change', () => {
+        const i = +el.getAttribute('data-role');
+        if(live()){
+          mutate(() => PRAMANA_API.patch('/api/admin/users/' + encodeURIComponent(list[i].email),
+                                         { role: el.value }));
+          return;
+        }
         const us = PRAMANA_AUTH.users();
-        const u = us[+el.getAttribute('data-role')];
+        const u = us[i];
         const before = u.role;
         u.role = el.value;
         PRAMANA_AUTH.saveUsers(us);
@@ -328,12 +412,17 @@
       const eEl = viewEl.querySelector('#uEmail'), nEl = viewEl.querySelector('#uName');
       const email = eEl.value.trim().toLowerCase(), name = nEl.value.trim();
       let ok = true;
-      const dup = PRAMANA_AUTH.users().some(u => u.email.toLowerCase() === email);
+      const dup = usersData().some(u => u.email.toLowerCase() === email);
       if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || dup){ eEl.classList.add('invalid'); ok = false; } else eEl.classList.remove('invalid');
       if(!name){ nEl.classList.add('invalid'); ok = false; } else nEl.classList.remove('invalid');
       if(!ok) return;
+      const role = viewEl.querySelector('#uRole').value;
+      if(live()){
+        mutate(() => PRAMANA_API.post('/api/admin/users', { email, name, role }));
+        return;
+      }
       const us = PRAMANA_AUTH.users();
-      us.push({ email, name, role: viewEl.querySelector('#uRole').value, enabled:true,
+      us.push({ email, name, role, enabled:true,
                 by:(PRAMANA_AUTH.current()||{}).name || 'admin', date:PRAMANA_AUTH.today() });
       PRAMANA_AUTH.saveUsers(us);
       logAudit('create', `beta access granted to ${email}`);
@@ -354,15 +443,40 @@
 
       <div class="tbl" style="margin-top:16px;">
         <div class="tbl-head cols-config"><div>Key</div><div>Value</div><div class="cell-default">Default</div><div>Description</div><div class="cell-who-wrap">Last changed</div></div>
-        ${state.config.map(r=>`
+        ${state.config.map((r,i)=>`
           <div class="tbl-row cols-config">
             <div class="cell-key">${esc(r.key)}${r.critical?'<span class="confirm-chip">CONFIRM</span>':''}</div>
-            <div class="cell-value" title="${esc(r.value)}">${esc(r.value)}</div>
+            <div class="cell-value ${live()&&isAdmin()?'editable':''}" data-cfg="${i}" title="${esc(r.value)}${live()&&isAdmin()?' — click to edit':''}">${esc(r.value)}</div>
             <div class="cell-default">${esc(r.def)}</div>
             <div class="cell-desc">${esc(r.desc)}</div>
             <div class="cell-who-wrap"><div class="cell-who">${esc(r.who)}</div><div class="cell-when">${esc(r.when)}</div></div>
           </div>`).join('')}
-      </div>`;
+      </div>
+      ${live()&&!isAdmin()?'<div class="rail-note" style="margin-top:10px;">Config is read-only for editors.</div>':''}`;
+
+    // LIVE + admin: click-to-edit; critical keys require an explicit confirm.
+    if(live() && isAdmin()){
+      viewEl.querySelectorAll('.cell-value.editable').forEach(el =>
+        el.addEventListener('click', () => {
+          if(el.querySelector('input')) return;
+          const r = state.config[+el.getAttribute('data-cfg')];
+          el.innerHTML = `<input class="mono" value="${esc(r.value)}" style="width:100%;border:none;outline:none;background:transparent;font:inherit;color:inherit;">`;
+          const input = el.querySelector('input');
+          input.focus(); input.select();
+          const commit = () => {
+            const value = input.value.trim();
+            if(!value || value === r.value){ render(); return; }
+            if(r.critical && !confirm(`Change ${r.key}?\n\n${r.value} → ${value}\n\nThis applies globally and immediately.`)){ render(); return; }
+            mutate(() => PRAMANA_API.patch('/api/admin/config/' + encodeURIComponent(r.key),
+                                           { value, confirmed: true }));
+          };
+          input.addEventListener('keydown', ev => {
+            if(ev.key === 'Enter') commit();
+            if(ev.key === 'Escape') render();
+          });
+          input.addEventListener('blur', commit);
+        }));
+    }
   }
 
   /* ---------- keys ---------- */
@@ -435,5 +549,13 @@
   document.getElementById('backApp').addEventListener('click', () => { window.location.href = 'app.html'; });
   function esc(s){ return String(s).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
 
-  render();
+  // boot — in LIVE mode all data comes from the server first
+  (async () => {
+    await PRAMANA_API.ready;
+    if(live()){
+      try { await loadLive(); }
+      catch(e){ console.warn('admin load failed', e); }
+    }
+    render();
+  })();
 })();

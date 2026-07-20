@@ -115,7 +115,15 @@ const PRAMANA_AUTH = (function(){
   /* ---------- session ---------- */
   const current  = () => read(SESSION_KEY, null);
   function setSession(s){ write(SESSION_KEY, s); }
+  const hasServerToken = () => { try { return !!localStorage.getItem('pramana_token'); } catch(e){ return false; } };
   function signOut(next){
+    // Best-effort server sign-out; the redirect must not wait on it.
+    try {
+      const t = localStorage.getItem('pramana_token');
+      if(t) fetch('/api/auth/signout', { method:'POST',
+        headers:{ 'Authorization':'Bearer ' + t } }).catch(()=>{});
+      localStorage.removeItem('pramana_token');
+    } catch(e){}
     try { localStorage.removeItem(SESSION_KEY); } catch(e){}
     if(window.google && google.accounts && google.accounts.id){
       try { google.accounts.id.disableAutoSelect(); } catch(e){}
@@ -124,10 +132,14 @@ const PRAMANA_AUTH = (function(){
   }
 
   /* A signed-in session is only valid while its allowlist row still
-     permits it — so revoking access in admin takes effect immediately. */
+     permits it — so revoking access in admin takes effect immediately.
+     LIVE mode (server token present): the backend re-validates every API
+     call and 401s revoked sessions; the local copy is display state only.
+     DEMO mode (static hosting): check the local allowlist as before. */
   function validate(){
     const s = current();
     if(!s) return null;
+    if(hasServerToken()) return s;
     const row = findUser(s.email);
     if(!row || !row.enabled){ try{ localStorage.removeItem(SESSION_KEY); }catch(e){} return null; }
     if(row.role !== s.role){ s.role = row.role; setSession(s); }   // role changes apply live

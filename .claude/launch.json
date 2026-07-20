@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "pramana",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "4173"],
+      "runtimeExecutable": "server/.venv/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "app:app", "--app-dir", "server", "--port", "4173"],
       "port": 4173
     }
   ]

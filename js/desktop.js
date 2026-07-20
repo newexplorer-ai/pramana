@@ -55,12 +55,30 @@
   let timers = [];
   const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
 
+  /* LIVE mode state (backend present): server-issued conversation id and
+     this session's real recents. */
+  const LIVE = { convId:null, recents:[], queryId:null };
+  const isLive = () => PRAMANA_API.on;
+
   /* ---------- library persistence (D2: saved conversations only) ---------- */
   const LIB_KEY = 'pramana_library';
   const libRead  = () => { try { return JSON.parse(localStorage.getItem(LIB_KEY)) || []; } catch(e){ return []; } };
   const libWrite = list => localStorage.setItem(LIB_KEY, JSON.stringify(list));
 
   function renderRecents(){
+    if(isLive()){
+      recentsEl.innerHTML = LIVE.recents.length
+        ? LIVE.recents.map((r,i) =>
+            `<button class="recent ${r.convId===LIVE.convId?'active':''}" data-i="${i}" title="${esc(r.title)}">${esc(r.title)}</button>`).join('')
+        : `<div class="rail-note" style="padding:4px 10px;">Questions you ask appear here.</div>`;
+      recentsEl.querySelectorAll('.recent').forEach(el =>
+        el.addEventListener('click', () => {
+          const r = LIVE.recents[+el.getAttribute('data-i')];
+          LIVE.convId = r.convId;
+          renderLiveAnswer(r.result, r.query);
+        }));
+      return;
+    }
     recentsEl.innerHTML = RECENTS.map(r =>
       `<button class="recent ${r.id===activeRecent?'active':''}" data-id="${r.id}" title="${esc(r.title)}">${esc(r.title)}</button>`).join('');
     recentsEl.querySelectorAll('.recent').forEach(el =>
@@ -332,6 +350,7 @@
   function renderAsk(){
     clearTimers();
     activeRecent = null; current = null;
+    LIVE.convId = null;                     // New question = new conversation
     mainTitle.textContent = 'New question';
     setNav('ask'); setStrip(null);
     convoScroll.classList.remove('t3-bg');
@@ -362,13 +381,19 @@
   /* ============================================================
      Library (D2: saved conversations only)
      ============================================================ */
-  function renderLibrary(){
+  async function renderLibrary(){
     clearTimers();
     activeRecent = null; current = null;
     mainTitle.textContent = 'Library';
     setNav('library'); setStrip(null);
     convoScroll.classList.remove('t3-bg');
-    const items = libRead();
+    let items;
+    if(isLive()){
+      try { items = await PRAMANA_API.get('/api/library'); } catch(e){ items = []; }
+      items = items.map(it => ({ title: it.title, query: it.query, savedAt: it.saved_at, id: it.id }));
+    } else {
+      items = libRead();
+    }
     convo.innerHTML = `
       <div class="page-title" style="margin-top:6px;">Library</div>
       <div class="page-lead">Conversations you saved with the <b style="font-weight:600;">Save</b> action. Saved answers keep their tier, citations, and dates.</div>
@@ -397,17 +422,33 @@
     convo.querySelectorAll('.lib-item').forEach(el =>
       el.addEventListener('click', e => {
         if(e.target.classList.contains('lib-remove')) return;
-        openConversation(el.getAttribute('data-q'), el.getAttribute('data-t'), {animate:false});
+        const query = el.getAttribute('data-q');
+        if(isLive()){ LIVE.convId = null; askLive(query); }   // reopen = re-ask
+        else openConversation(query, el.getAttribute('data-t'), {animate:false});
       }));
     convo.querySelectorAll('.lib-remove').forEach(el =>
-      el.addEventListener('click', () => {
-        const items = libRead(); items.splice(+el.getAttribute('data-i'),1); libWrite(items);
+      el.addEventListener('click', async () => {
+        if(isLive()){
+          const item = items[+el.getAttribute('data-i')];
+          try { await PRAMANA_API.del('/api/library/' + item.id); } catch(e){}
+        } else {
+          const local = libRead(); local.splice(+el.getAttribute('data-i'),1); libWrite(local);
+        }
         renderLibrary();
       }));
   }
 
-  function saveCurrent(){
+  async function saveCurrent(){
     if(!current){ return; }
+    if(isLive()){
+      try {
+        await PRAMANA_API.post('/api/library',
+          { title: current.title, query: current.query, conversation_id: LIVE.convId });
+        saveBtn.textContent = 'Saved ✓';
+        setTimeout(()=>{ saveBtn.textContent = 'Save'; }, 1800);
+      } catch(e){}
+      return;
+    }
     const items = libRead();
     if(items.some(it => it.query === current.query)){ saveBtn.textContent = 'Saved ✓'; return; }
     const d = new Date();
@@ -421,31 +462,27 @@
   /* ============================================================
      Sources (PRD §4.4 — "what do you actually know?")
      ============================================================ */
-  function renderSources(){
+  async function renderSources(){
     clearTimers();
     activeRecent = null; current = null;
     mainTitle.textContent = 'Sources';
     setNav('sources'); setStrip(null);
     convoScroll.classList.remove('t3-bg');
+    let domains;
+    if(isLive()){
+      try { domains = (await PRAMANA_API.get('/api/sources'))
+              .map(d => ({ domain: d.domain, note: d.trust_note })); }
+      catch(e){ domains = ALLOWLIST_DOMAINS; }
+    } else {
+      domains = ALLOWLIST_DOMAINS;
+    }
     convo.innerHTML = `
       <div class="page-title" style="margin-top:6px;">What Pramana knows</div>
-      <div class="page-lead">The curated corpus and the vetted web allowlist — everything an answer can cite, and nothing else. Read-only; the corpus grows weekly from the gap log.</div>
+      <div class="page-lead">Every grounded answer cites only these vetted Indian domains — the web allowlist maintained by the Pramana editorial team. Nothing else can be cited.</div>
 
-      <div class="src-section-label">Curated corpus · ${CORPUS_SOURCES.length} documents</div>
+      <div class="src-section-label">Web allowlist · ${domains.length} domains</div>
       <div class="tbl" style="margin-top:10px;">
-        <div class="tbl-head cols-corpus"><div>Document</div><div>Issuing body</div><div>Year</div><div>Type</div></div>
-        ${CORPUS_SOURCES.map(s=>`
-          <div class="tbl-row cols-corpus">
-            <div class="corpus-title">${esc(s.title)}<div class="corpus-id">${esc(s.id)}</div></div>
-            <div class="cell-by">${esc(s.body)}</div>
-            <div class="cell-by">${esc(s.year)}</div>
-            <div><span class="tag">${esc(s.type)}</span></div>
-          </div>`).join('')}
-      </div>
-
-      <div class="src-section-label" style="margin-top:26px;">Web allowlist · ${ALLOWLIST_DOMAINS.length} domains</div>
-      <div class="tbl" style="margin-top:10px;">
-        ${ALLOWLIST_DOMAINS.map(d=>`
+        ${domains.map(d=>`
           <div class="tbl-row cols-allow">
             <div class="cell-domain">${esc(d.domain)}</div>
             <div class="cell-note">${esc(d.note)}</div>
@@ -455,8 +492,235 @@
     convoScroll.scrollTop = 0;
     railTitle.textContent = 'Sources';
     railMode.textContent = 'Read-only';
-    railBody.innerHTML = `<div class="rail-note">Tier 2 answers may only cite the allowlisted domains. Missing something? Ask a question about it — unanswered queries drive what gets added next.</div>`;
+    railBody.innerHTML = `<div class="rail-note">Answers may only cite the allowlisted domains. Missing something? Ask a question about it — unanswered queries drive what gets added next.</div>`;
     renderRecents();
+  }
+
+  /* ============================================================
+     LIVE mode — real answers from the orchestrator (SSE)
+     ============================================================ */
+  async function askLive(query){
+    clearTimers();
+    setNav('convo'); setStrip(null);
+    convoScroll.classList.remove('t3-bg');
+    current = { title: truncate(query,60), query };
+    mainTitle.textContent = current.title;
+    convo.innerHTML = `
+      <div class="query-echo"><p>${esc(query)}</p></div>
+      <div class="thinking"><span class="spinner"></span>Thinking…</div>
+      <div class="retrieve-card">
+        <h3>Finding grounded sources</h3>
+        <div id="liveStages"></div>
+        <div class="progress-bar"></div>
+      </div>
+      <p class="retrieve-note">Usually 4–8 seconds · answers stream as soon as they are ready</p>`;
+    convoScroll.scrollTop = 0;
+    railTitle.textContent = 'Sources'; railMode.textContent = '…';
+    railBody.innerHTML = `<div class="rail-note">Searching allowlisted Indian domains…</div>`;
+    renderRecents();
+
+    const stagesEl = document.getElementById('liveStages');
+    const addStage = label => {
+      if(!stagesEl.isConnected) return;
+      const prev = stagesEl.querySelector('.rstep.active');
+      if(prev){ prev.classList.remove('active'); prev.classList.add('done');
+                prev.querySelector('.dot').innerHTML = svg(I.check,{w:9,sw:3.2}); }
+      const div = document.createElement('div');
+      div.className = 'rstep active';
+      div.innerHTML = `<span class="dot"></span>${esc(label)}`;
+      stagesEl.appendChild(div);
+    };
+
+    try {
+      await PRAMANA_API.ask(query, LIVE.convId, {
+        stage:  d => addStage(d.label),
+        error:  d => renderLiveError(query, d.detail),
+        result: d => {
+          LIVE.convId = d.conversation_id;
+          LIVE.queryId = d.query_id;
+          LIVE.recents = [{ title: truncate(query,40), query,
+                            convId: d.conversation_id, result: d },
+                          ...LIVE.recents.filter(r => r.convId !== d.conversation_id)].slice(0,8);
+          renderLiveAnswer(d, query);
+        },
+      });
+    } catch(e){ renderLiveError(query, e.message); }
+  }
+
+  function renderLiveError(query, detail){
+    setStrip(null);
+    const friendly = /anthropic_credentials|anthropic_sdk|authentication method|api_key/i.test(detail||'')
+      ? 'The backend has no Anthropic credentials. Export ANTHROPIC_API_KEY and restart the server.'
+      : /daily_cap/.test(detail||'') ? 'You have reached the daily query cap for the beta.'
+      : 'Something went wrong answering this question.';
+    convo.innerHTML = `
+      <div class="query-echo"><p>${esc(query)}</p></div>
+      <div class="notice notice-blue" style="margin-top:16px;">${svg(I.info,{w:11,stroke:'#3a5876'})}
+        <span><b style="font-weight:600;">${esc(friendly)}</b><br>
+        <span style="font-family:var(--mono);font-size:10px;">${esc(detail||'unknown')}</span></span></div>`;
+    railTitle.textContent = 'Sources'; railMode.textContent = '—';
+    railBody.innerHTML = `<div class="rail-note">No answer was produced.</div>`;
+  }
+
+  /* Render prose from contract segments: escaped text + one pill per citation. */
+  function liveProse(res){
+    return (res.segments||[]).map(seg => {
+      const pills = (seg.citations||[]).map(i => {
+        const c = res.citations[i];
+        return `<span class="pill web" data-cite="c${i}"><span class="dotc"></span>${esc((c.domain||'web').toUpperCase())}</span>`;
+      }).join('');
+      return esc(seg.text).replace(/\n/g,'<br>') + pills;
+    }).join(' ');
+  }
+
+  function renderLiveAnswer(res, query){
+    clearTimers();
+    setNav('convo');
+    LIVE.queryId = res.query_id;
+    current = { title: truncate(query,60), query };
+    mainTitle.textContent = current.title;
+    const withheld = res.tier === 3 && res.status === 'not_found';
+
+    if(res.tier === 2){
+      setStrip(null);
+      convoScroll.classList.remove('t3-bg');
+      const primary = res.citations[0] || {};
+      convo.innerHTML = `
+        <div class="query-echo"><p>${esc(query)}</p></div>
+        <div class="answer-head">
+          <div class="answer-meta">
+            <span class="badge badge-t2">🌐 Grounded · Web allowlist <span class="t">Tier&nbsp;2</span></span>
+            <span class="stamp">Answered ${esc(res.retrieved_at)}</span>
+          </div>
+        </div>
+        <div class="src-card web">
+          <div class="src-head">
+            <div class="src-head-l">${svg(I.globe,{w:14,sw:1.9})}Web · allowlisted domain</div>
+            <div class="src-head-r">${esc((primary.domain||'').toUpperCase())}</div>
+          </div>
+          <div class="src-body">
+            <div class="prose">${liveProse(res)}</div>
+            <div class="src-foot">
+              <a class="src-title-link" href="${esc(primary.url||'#')}" target="_blank" rel="noopener">${esc(primary.title||primary.url||'Source')} <span style="font-size:10px;">↗</span></a>
+              <div class="src-cite">${esc(primary.domain||'')} · web page</div>
+            </div>
+          </div>
+        </div>
+        <div class="act-row">
+          <span class="act" data-fb="up">${svg(I.like,{w:16,sw:1.7})}</span>
+          <span class="act" data-fb="down">${svg(I.like,{w:16,sw:1.7,style:'transform:scaleY(-1)'})}</span>
+          <span class="act" data-copy>${svg(I.copy,{w:16,sw:1.7})}</span>
+          <span class="spacer">${esc(res.model_used||'')} · ${res.latency_ms} ms</span>
+        </div>
+        ${res.followups && res.followups.length ? `
+        <div class="followups">
+          <div class="block-title">${svg(I.list,{w:14})}Follow-up questions</div>
+          ${res.followups.map(f=>`<div class="followup" data-q="${esc(f)}"><span>${esc(f)}</span><span class="chev">›</span></div>`).join('')}
+        </div>`:''}
+        <div class="snapshot">${svg(I.clock,{w:11})}Retrieved from allowlisted domains on ${esc(res.retrieved_at)} · web content is a snapshot we do not control</div>
+        <div style="height:20px;"></div>`;
+    } else {
+      convoScroll.classList.add('t3-bg');
+      setStrip(withheld
+        ? `${svg(I.shield,{w:13,stroke:'#5a4b76'})}<span>High-stakes query — unverified answers are withheld</span>`
+        : `${sparkle('#6a5a86',13)}<span>General model answer · no Indian-literature citation</span>`);
+      convo.innerHTML = `
+        <div class="query-echo" style="background:#fff;"><p>${esc(query)}</p></div>
+        <div class="answer-head" style="margin-top:16px;">
+          <div class="answer-meta">
+            <span class="badge badge-t3">${sparkle('#6a5a86',11)}${withheld?'Not found · high-stakes':'General model'} <span class="t">Tier&nbsp;3</span></span>
+            ${!withheld && res.model_used ? `<span class="model-chip">${esc(res.model_used)}</span>`:''}
+          </div>
+        </div>
+        <p class="t3-prose">${esc(res.answer_text||'').replace(/\n/g,'<br>')}</p>
+        <div class="t3-warn">${withheld
+          ? 'This query was logged to the corpus-gap register. For dosing and interaction questions Pramana only answers from a grounded Indian source.'
+          : 'This answer is <b style="font-weight:600;">not grounded in Indian medical literature.</b> It carries no citation and has not passed the groundedness check. Verify against a primary source before any clinical use.'}</div>
+        <div class="act-row" style="margin-top:16px;">
+          ${withheld?'':`
+          <span class="act" data-fb="up">${svg(I.like,{w:16,sw:1.7})}</span>
+          <span class="act" data-fb="down">${svg(I.like,{w:16,sw:1.7,style:'transform:scaleY(-1)'})}</span>
+          <span class="act" data-copy>${svg(I.copy,{w:16,sw:1.7})}</span>`}
+          <a class="suggest-src" id="suggestSrc">Suggest a source</a>
+        </div>
+        <div style="height:20px;"></div>`;
+      const sug = document.getElementById('suggestSrc');
+      sug.addEventListener('click', async () => {
+        try { await PRAMANA_API.post('/api/suggest-source', { query_id: res.query_id }); } catch(e){}
+        sug.textContent = '✓ Logged to the corpus-gap register — thank you';
+        sug.classList.add('done');
+      });
+    }
+    convoScroll.scrollTop = 0;
+    renderLiveRail(res);
+    renderRecents();
+
+    convo.querySelectorAll('.followup[data-q]').forEach(el =>
+      el.addEventListener('click', () => submit(el.getAttribute('data-q'))));
+    convo.querySelectorAll('.pill[data-cite]').forEach(el =>
+      el.addEventListener('click', () => flashRailCard(el.getAttribute('data-cite'))));
+    convo.querySelectorAll('[data-fb]').forEach(el =>
+      el.addEventListener('click', async () => {
+        try { await PRAMANA_API.post('/api/feedback',
+          { query_id: res.query_id, feedback: el.getAttribute('data-fb') }); } catch(e){ return; }
+        el.style.color = 'var(--t1)';
+      }));
+    const copyEl = convo.querySelector('[data-copy]');
+    if(copyEl) copyEl.addEventListener('click', () => {
+      try { navigator.clipboard.writeText(res.answer_text||''); copyEl.style.color='var(--t1)'; } catch(e){}
+    });
+  }
+
+  function renderLiveRail(res){
+    if(res.tier === 2 && res.citations.length){
+      railTitle.textContent = `Sources · ${res.citations.length}`;
+      railMode.textContent = 'Grounded';
+      railBody.innerHTML = res.citations.map((c,i)=> i===0 ? `
+        <div class="rail-card web-card featured" data-cite="c${i}">
+          <div class="rail-card-head">
+            <div class="rail-src blue">${svg('<circle cx="12" cy="12" r="9"/>',{w:7,sw:3,stroke:'#445f7a'})}${esc((c.domain||'').toUpperCase())}</div>
+            <span class="rail-page">web page</span>
+          </div>
+          <div class="rail-card-body">
+            ${c.cited_text?`<div class="rail-quote">“${esc(c.cited_text.slice(0,220))}${c.cited_text.length>220?'…':''}”</div>`:''}
+            <div class="rail-doc-title">${esc(c.title||c.url)}</div>
+            <div class="rail-doc-meta">${esc(c.domain||'')} · retrieved ${esc(res.retrieved_at)}</div>
+            <a class="rail-open" href="${esc(c.url)}" target="_blank" rel="noopener" style="text-decoration:none;">Open source <span style="font-size:10px;">↗</span></a>
+          </div>
+        </div>` : `
+        <div class="rail-card web-card compact" data-cite="c${i}">
+          <div class="rail-compact-head">
+            <div class="rail-src blue">${svg('<circle cx="12" cy="12" r="9"/>',{w:7,sw:3,stroke:'#445f7a'})}${esc((c.domain||'').toUpperCase())}</div>
+            <a href="${esc(c.url)}" target="_blank" rel="noopener" class="chev" style="text-decoration:none;">↗</a>
+          </div>
+          <div class="rail-doc-title">${esc(c.title||c.url)}</div>
+          ${c.cited_text?`<div class="rail-doc-meta">“${esc(c.cited_text.slice(0,110))}…”</div>`:''}
+        </div>`).join('') + `
+        <div class="rail-note">Every grounded claim links to a passage here. Links open the original page.</div>`;
+      return;
+    }
+    const withheld = res.status === 'not_found';
+    railTitle.textContent = 'Sources · 0';
+    railMode.textContent = withheld ? 'Withheld' : 'General model';
+    railBody.innerHTML = `
+      <div class="rail-t3-card">
+        <div class="rail-t3-head">
+          <span class="rail-t3-icon">${sparkle('#6a5a86',14)}</span>
+          <span class="rail-t3-title">No grounded sources</span>
+        </div>
+        <p>${withheld
+            ? 'This dosing/interaction question isn’t covered by the allowlisted Indian sources, so no unverified answer is shown.'
+            : 'The allowlisted Indian sources didn’t cover this question, so the answer comes from a general model.'}</p>
+      </div>
+      <div>
+        <div class="rail-label">Sources checked</div>
+        <div class="chip-row">${(res.sources_searched||[]).map(s=>`<span class="checked-chip">${esc(s.replace(/^web:/,''))}</span>`).join('')}</div>
+      </div>
+      ${withheld || !res.model_used ? '' : `
+      <div>
+        <div class="rail-label">Model</div>
+        <div class="chip-row"><span class="model-chip">${sparkle('#6a5a86',9)}${esc(res.model_used)}</span></div>
+      </div>`}`;
   }
 
   /* ============================================================
@@ -467,6 +731,7 @@
     if(!query) return;
     qinput.value = '';
     qinput.placeholder = 'Ask a follow-up…';
+    if(isLive()){ askLive(query); return; }
     const match = RECENTS.find(r => routeQuery(r.query) === routeQuery(query));
     activeRecent = match ? match.id : null;
     current = { title: truncate(query,60), query };
@@ -513,6 +778,10 @@
     });
   }
 
-  // boot
-  openConversation(RECENTS[0].query, RECENTS[0].title, {animate:false});
+  // boot — live mode starts at Ask (no seeded conversations exist)
+  (async () => {
+    await PRAMANA_API.ready;
+    if(isLive()) renderAsk();
+    else openConversation(RECENTS[0].query, RECENTS[0].title, {animate:false});
+  })();
 })();

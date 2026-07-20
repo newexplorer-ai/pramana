@@ -1,4 +1,47 @@
-# Pramana — interactive prototype (all surfaces)
+# Pramana — two-tier MVP (frontend + backend)
+
+## Backend (`server/`)
+
+FastAPI orchestrator implementing the two-tier router (Tier 1/corpus was cut
+from scope — no embeddings, no vector DB):
+
+- **Tier 2 — grounded web**: Anthropic `web_search` server tool restricted to
+  the admin-maintained allowlist (`allowed_domains`), API-enforced citations,
+  Haiku groundedness judge (PRD §7.4).
+- **Tier 3 — general model**: hedged fallback, clearly labelled; **withheld**
+  for dosing/interaction queries (D1→c) — those return an honest not-found.
+
+Also server-side now: Google auth + the beta allowlist (revocation kills live
+sessions), config-as-data (`app_config`, editable in Admin with a CONFIRM gate
+on `model.generation`), audit log, query/gap logging, per-user daily caps,
+conversation context (last N turns), saved conversations, access requests.
+Storage is SQLite (`server/pramana.db`).
+
+### Run
+
+```bash
+cd server && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+export ANTHROPIC_API_KEY=sk-ant-...        # required for real answers
+export GOOGLE_CLIENT_ID=...                # optional; demo sign-in when unset
+cd .. && server/.venv/bin/python -m uvicorn app:app --app-dir server --port 4173
+# open http://localhost:4173
+```
+
+The same process serves the frontend. Without `ANTHROPIC_API_KEY`, auth and
+admin work fully; asking a question shows a clear credentials error. The
+frontend detects the backend via `/api/health` — on static hosting (GitHub
+Pages) it falls back to the original mock demo mode automatically.
+
+### Response contract (frozen)
+
+`POST /api/ask` streams SSE `stage` events then one `result`:
+`{query_id, conversation_id, tier, status, high_stakes, answer_text,
+segments[{text,citations[]}], citations[{cited_text,url,title,domain}],
+sources_searched[], followups[], retrieved_at, model_used, latency_ms}`
+
+---
+
+# Frontend prototype (all surfaces)
 
 Implements the combined MVP PRD v1.0: marketing site (`index.html`, prod landing), doctor
 app (`app.html`), admin portal (`admin.html`), plus the original mobile-frame

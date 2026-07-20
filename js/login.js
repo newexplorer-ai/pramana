@@ -50,7 +50,43 @@
   }
 
   /* ---------- outcome handling ---------- */
+
+  /* LIVE mode: the server verifies the token and owns the allowlist. */
+  async function serverLogin(path, body, emailForErrors){
+    try {
+      const res = await PRAMANA_API.post(path, body);
+      PRAMANA_API.setToken(res.token);
+      A.setSession(res.user);
+      location.replace(destinationFor(res.user));
+    } catch(err){
+      showDenied(err.detail || 'failed', emailForErrors);
+    }
+  }
+
+  function showDenied(reason, email){
+    email = esc(email || 'this account');
+    if(reason === 'not_allowlisted'){
+      showAlert('deny',
+        `<b>Not on the beta allowlist.</b> <span class="mono">${email}</span> isn’t approved yet. ` +
+        `Pramana is limited to verified clinicians during the closed beta. ` +
+        `<a href="index.html#request">Request access →</a>`);
+    } else if(reason === 'disabled'){
+      showAlert('deny',
+        `<b>Access suspended.</b> <span class="mono">${email}</span> is on the allowlist but currently disabled. ` +
+        `Contact your Pramana administrator.`);
+    } else if(reason === 'unverified'){
+      showAlert('deny', '<b>Unverified Google account.</b> Verify your email with Google, then try again.');
+    } else {
+      showAlert('deny', '<b>Sign-in failed.</b> Please try again.');
+    }
+  }
+
   function handleClaims(claims){
+    // LIVE mode never trusts client-side claims — it posts to the server.
+    if(PRAMANA_API.on){
+      serverLogin('/api/auth/demo', { email: claims.email }, claims.email);
+      return;
+    }
     const result = A.verifyAndAuthorize(claims);
     if(result.ok){
       A.setSession(result.session);
@@ -78,7 +114,15 @@
   function initGoogle(){
     google.accounts.id.initialize({
       client_id: A.GOOGLE_CLIENT_ID,
-      callback: resp => handleClaims(A.decodeIdToken(resp.credential)),
+      callback: resp => {
+        if(PRAMANA_API.on){
+          // Signature verified SERVER-side; client never decides authenticity.
+          const claims = A.decodeIdToken(resp.credential) || {};
+          serverLogin('/api/auth/google', { credential: resp.credential }, claims.email);
+        } else {
+          handleClaims(A.decodeIdToken(resp.credential));
+        }
+      },
       auto_select: false,
       cancel_on_tap_outside: true,
     });
@@ -127,17 +171,27 @@
   }
 
   /* ---------- boot ---------- */
-  if(A.isConfigured){
-    const start = Date.now();
-    (function wait(){
-      if(window.google && google.accounts && google.accounts.id) return initGoogle();
-      if(Date.now() - start > 6000){
-        showAlert('deny', '<b>Could not reach Google Sign-In.</b> Check your connection and reload.');
-        return;
-      }
-      setTimeout(wait, 120);
-    })();
-  } else {
-    initDemo();
-  }
+  (async function boot(){
+    await PRAMANA_API.ready;
+    // LIVE mode: the server says whether Google auth is configured.
+    const googleConfigured = PRAMANA_API.on
+      ? PRAMANA_API.health.google_auth : A.isConfigured;
+    if(PRAMANA_API.on && !PRAMANA_API.health.anthropic){
+      showAlert('info', '<b>Backend is up but no Anthropic credentials are set.</b> ' +
+        'Sign-in works; asking questions will fail until <span class="mono">ANTHROPIC_API_KEY</span> is exported.');
+    }
+    if(googleConfigured){
+      const start = Date.now();
+      (function wait(){
+        if(window.google && google.accounts && google.accounts.id) return initGoogle();
+        if(Date.now() - start > 6000){
+          showAlert('deny', '<b>Could not reach Google Sign-In.</b> Check your connection and reload.');
+          return;
+        }
+        setTimeout(wait, 120);
+      })();
+    } else {
+      initDemo();
+    }
+  })();
 })();
