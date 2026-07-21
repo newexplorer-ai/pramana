@@ -513,6 +513,58 @@
     } catch(e){ renderLiveError(query, e.message); }
   }
 
+  /* Terminal not-found: no tier answered. Deliberately styled unlike any
+     tier — the clinician sees what was searched, never a synthesized answer. */
+  function renderNotFound(res, query){
+    setStrip(null);
+    convoScroll.classList.remove('t3-bg');
+    const why = {
+      high_stakes: 'This is a dosing or interaction question. Pramana only answers those from a grounded Indian source, so no unverified answer is shown.',
+      tier3_disabled: 'Pramana is in grounded-only mode, so no unverified general-model answer is shown.',
+      all_tiers_failed: 'The allowlisted Indian sources did not substantively answer this question, and no unverified answer is being shown in its place.',
+    }[res.withheld_reason] || 'No source substantively answered this question.';
+
+    convo.innerHTML = `
+      <div class="query-echo"><p>${esc(query)}</p></div>
+      <div class="nf-card">
+        <div class="nf-head">${svg(I.info,{w:15,stroke:'#8a5a3c'})}<span>Not found in the indexed Indian literature</span></div>
+        <p class="nf-why">${esc(why)}</p>
+        <div class="nf-label">Sources checked</div>
+        <div class="chip-row">${(res.sources_searched||[]).map(s=>
+          `<span class="checked-chip">${esc(String(s).replace(/^web:/,''))}</span>`).join('') ||
+          '<span class="checked-chip">none</span>'}</div>
+        <div class="nf-actions">
+          <a class="suggest-src" id="suggestSrc">Suggest a source</a>
+        </div>
+      </div>
+      <div style="height:20px;"></div>`;
+    convoScroll.scrollTop = 0;
+
+    railTitle.textContent = 'Sources · 0';
+    railMode.textContent = 'Not found';
+    railBody.innerHTML = `
+      <div class="rail-t3-card" style="background:var(--adm-bg);border-color:var(--adm-br);">
+        <div class="rail-t3-head">
+          <span class="rail-t3-icon" style="background:#f0e2d3;">${svg(I.info,{w:14,stroke:'#8a5a3c'})}</span>
+          <span class="rail-t3-title">No answer served</span>
+        </div>
+        <p style="color:var(--adm-ink);">Nothing is shown rather than something unverified. Unanswered questions drive what gets added to the allowlist next.</p>
+      </div>
+      <div>
+        <div class="rail-label">Searched</div>
+        <div class="chip-row">${(res.sources_searched||[]).map(s=>
+          `<span class="checked-chip">${esc(String(s).replace(/^web:/,''))}</span>`).join('')}</div>
+      </div>`;
+
+    renderRecents();
+    const sug = document.getElementById('suggestSrc');
+    sug.addEventListener('click', async () => {
+      try { await PRAMANA_API.post('/api/suggest-source', { query_id: res.query_id }); } catch(e){}
+      sug.textContent = '✓ Logged to the corpus-gap register — thank you';
+      sug.classList.add('done');
+    });
+  }
+
   function renderLiveError(query, detail){
     setStrip(null);
     const friendly = /anthropic_credentials|anthropic_sdk|authentication method|api_key/i.test(detail||'')
@@ -545,7 +597,10 @@
     LIVE.queryId = res.query_id;
     current = { title: truncate(query,60), query };
     mainTitle.textContent = current.title;
-    const withheld = res.tier === 3 && res.status === 'not_found';
+
+    // tier === null means every tier fell through: a distinct not-found state.
+    // No badge, no tier colour, no synthesized answer — just what was searched.
+    if(res.tier === null || res.status === 'not_found') return renderNotFound(res, query);
 
     if(res.tier === 2){
       setStrip(null);

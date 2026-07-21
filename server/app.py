@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS query_logs(
   query_id TEXT PRIMARY KEY, user_email TEXT, conversation_id TEXT,
   query_text TEXT, tier INTEGER, status TEXT, high_stakes INTEGER,
   latency_ms INTEGER, model_used TEXT, feedback TEXT,
-  suggested_source INTEGER DEFAULT 0, created_at TEXT);
+  suggested_source INTEGER DEFAULT 0, fallthrough TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS saved_conversations(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_email TEXT, title TEXT,
   conversation_id TEXT, query TEXT, saved_at TEXT,
@@ -129,6 +129,10 @@ SEED_CONFIG = [
     ("generation.effort", "medium", "medium", "Effort level for generation (low|medium|high).", 0),
     ("websearch.max_uses", "3", "3", "Tier 2 search cap per query.", 0),
     ("groundedness.judge", "true", "true", "Run the judge model on Tier 2 answers.", 0),
+    # Retrieval gate: a single stray source is not coverage. Applied to the
+    # grounded path — fewer than this many distinct cited sources falls through.
+    ("retrieval.min_chunks", "2", "2",
+     "Minimum distinct cited sources before a grounded answer may be served.", 0),
     # Safety switch: when false, unverified general-model answers are never
     # served — every ungrounded question returns an honest not-found instead.
     ("answers.allow_tier3", "true", "true",
@@ -173,7 +177,15 @@ def init_db() -> None:
            "Paediatrics", "IPGMER Kolkata", now()))
 
 
+def _migrate() -> None:
+    """Additive column migrations for already-deployed databases."""
+    cols = {r["name"] for r in q("PRAGMA table_info(query_logs)")}
+    if "fallthrough" not in cols:
+        q("ALTER TABLE query_logs ADD COLUMN fallthrough TEXT")
+
+
 init_db()
+_migrate()
 
 
 def cfg(key: str, fallback: str = "") -> str:
@@ -297,14 +309,31 @@ TIER2_SYSTEM = (
     "2. Be concise: 2-4 sentences of answer, professional register, no preamble. "
     "Write plain prose — no markdown bold, headers, or bullet lists.\n"
     "3. Answer whenever the search returned relevant material, even if it is "
-    "partial: report what those sources do say and note the limit. Reserve "
-    "[[NOT_FOUND]] (alone, nothing else) for when the search genuinely returned "
-    "nothing on the topic. Do not discard usable sources — a partial grounded "
-    "answer is far more useful than a refusal.\n"
-    "4. You are a reference tool, not a clinician: report what the literature "
+    "partial: report what those sources do say and note the limit. Do not "
+    "discard usable sources — a partial grounded answer is more useful than a "
+    "refusal.\n"
+    "4. If the sources do NOT substantively answer the question, do not compose "
+    "an answer, do not describe what you searched for, and do not explain what "
+    "you could not find. Reply with exactly: NO_SUBSTANTIVE_ANSWER\n"
+    "5. You are a reference tool, not a clinician: report what the literature "
     "says; do not add practice recommendations of your own.\n"
-    "5. After the answer, on a new line, write [[FOLLOWUPS]] followed by two "
+    "6. After the answer, on a new line, write [[FOLLOWUPS]] followed by two "
     "short follow-up questions separated by ' | '."
+)
+
+# The router's ONLY refusal signal. Returned by a dedicated structured call
+# because Anthropic rejects structured output combined with the Citations
+# feature (400) — and API-enforced citations are the product's core promise,
+# so generation keeps citations and the boolean comes from this verdict step.
+VERDICT_SYSTEM = (
+    "You audit a draft answer against the sources it cites. Return JSON only.\n"
+    "answered: true only if the answer states substantive findings drawn from "
+    "the cited sources. It is FALSE if the text instead reports that nothing "
+    "was found, describes what was searched for, says the sources do not cover "
+    "the question, is empty, or only points elsewhere for the real answer.\n"
+    "grounded: true only if the cited evidence supports the answer's factual "
+    "claims.\n"
+    'Reply exactly: {"answered": <bool>, "grounded": <bool>}'
 )
 
 TIER3_SYSTEM = (
@@ -495,40 +524,78 @@ def _extract_answer(resp) -> tuple[list[dict], list[dict], str]:
     return segments, citations, "\n".join(plain).strip()
 
 
-def _judge_grounded(question: str, answer: str, citations: list[dict]) -> bool:
-    """Cheap judge (PRD §7.4): do the cited passages support the answer?
+def _verdict(question: str, answer: str, citations: list[dict]) -> dict:
+    """Structured refusal + groundedness signal. Booleans only.
 
-    Provider-agnostic — the judge is a plain structured yes/no, so either
-    provider works here regardless of what served the answer.
+    Returns {"answered": bool, "grounded": bool, "ok": bool}. `ok` is False if
+    the verdict call itself failed, which the router treats conservatively:
+    an unverifiable answer is never served behind a grounded badge.
     """
-    if cfg("groundedness.judge") != "true" or not citations:
-        return bool(citations)
-    evidence = "\n".join(f"- {c['cited_text'][:400]} ({c['domain']})" for c in citations[:8])
-    prompt = (f"Question: {question}\n\nAnswer: {answer}\n\nCited passages:\n{evidence}\n\n"
-              "Does the cited evidence support every factual claim in the answer? "
-              'Reply as JSON: {"grounded": true|false}')
+    if not citations:
+        return {"answered": False, "grounded": False, "ok": True}
+    evidence = "\n".join(f"- {c['cited_text'][:400]} ({c['domain']})"
+                         for c in citations[:8])
+    prompt = (f"Question: {question}\n\nDraft answer: {answer}\n\n"
+              f"Cited sources:\n{evidence}")
     judge_model = model_for("judge")
-    try:
-        jc = _client(judge_model)
-        if provider_of(judge_model) == "openai":
-            r = jc.responses.create(model=judge_model, input=prompt, max_output_tokens=200)
-            text = getattr(r, "output_text", "") or ""
-        else:
-            resp = jc.messages.create(
-                model=judge_model, max_tokens=256,
-                output_config={"format": {"type": "json_schema", "schema": {
-                    "type": "object",
-                    "properties": {"grounded": {"type": "boolean"}},
-                    "required": ["grounded"], "additionalProperties": False}}},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = next(b.text for b in resp.content if b.type == "text")
-        m = re.search(r'\{.*\}', text, re.S)
-        return bool(json.loads(m.group(0) if m else text).get("grounded"))
-    except Exception:
-        # Judge failure must not take the product down; the deterministic
-        # citation-presence check already passed.
-        return True
+    schema = {"type": "object",
+              "properties": {"answered": {"type": "boolean"},
+                             "grounded": {"type": "boolean"}},
+              "required": ["answered", "grounded"], "additionalProperties": False}
+    for _ in range(2):                     # one retry; transient failures happen
+        try:
+            jc = _client(judge_model)
+            if provider_of(judge_model) == "openai":
+                r = jc.responses.create(model=judge_model,
+                                        instructions=VERDICT_SYSTEM,
+                                        input=prompt, max_output_tokens=200)
+                text = getattr(r, "output_text", "") or ""
+            else:
+                resp = jc.messages.create(
+                    model=judge_model, max_tokens=256,
+                    system=[{"type": "text", "text": VERDICT_SYSTEM}],
+                    output_config={"format": {"type": "json_schema", "schema": schema}},
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                text = next(b.text for b in resp.content if b.type == "text")
+            m = re.search(r"\{.*\}", text, re.S)
+            data = json.loads(m.group(0) if m else text)
+            grounded = bool(data.get("grounded"))
+            if cfg("groundedness.judge", "true") != "true":
+                grounded = True            # judge disabled by admin switch
+            return {"answered": bool(data.get("answered")),
+                    "grounded": grounded, "ok": True}
+        except Exception:
+            continue
+    return {"answered": False, "grounded": False, "ok": False}
+
+
+def _grounded_answer(model: str, system: str, msgs: list[dict],
+                     domains: list[str], effort: str, max_uses: int):
+    """Provider-neutral Tier 2 generation. Returns (text, citations, model, refused).
+
+    Search runs server-side inside this one call on both providers, so the
+    retrieval gate is applied to the sources that come back rather than before
+    generation — there is no separate retrieval step to gate.
+    """
+    prov = provider_of(model)
+    client = _client(model)
+    if prov == "openai":
+        text, citations = _openai_grounded(client, model, system, msgs,
+                                           domains, max_uses)
+        return text, citations, model, False
+    resp = _run_with_pause_turn(
+        client, model=model, max_tokens=2048,
+        thinking={"type": "adaptive"},
+        output_config={"effort": effort},
+        system=[{"type": "text", "text": system,
+                 "cache_control": {"type": "ephemeral"}}],
+        tools=[{"type": "web_search_20260209", "name": "web_search",
+                "max_uses": max_uses, "allowed_domains": domains}],
+        messages=msgs,
+    )
+    segments, citations, plain = _extract_answer(resp)
+    return plain, citations, resp.model, resp.stop_reason == "refusal"
 
 
 def _load_history(conversation_id: str) -> list[dict]:
@@ -576,44 +643,27 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         prov = active_provider()
         model = model_for("generation")
         effort = cfg("generation.effort", "medium")
+        min_chunks = int(cfg("retrieval.min_chunks", "2"))
         msgs = history + [{"role": "user", "content": query}]
+        falls: list[dict] = []                       # every fall-through, for the gap log
+
+        def fell(tier, reason):
+            falls.append({"tier": tier, "reason": reason})
+            result["fallthrough"] = falls
 
         # ---------- Tier 2: allowlisted web search ----------
+        # NOTE: Tier 1 (curated corpus) is out of scope — there is no corpus,
+        # no embeddings, no vector store — so the sequence starts at Tier 2.
         answered_t2 = False
-        if domains:
+        if not domains:
+            fell(2, "no_enabled_domains")
+        else:
             yield sse("stage", {"label": f"Searching {len(domains)} allowlisted Indian "
                                          f"domains via {PROVIDERS[prov]['label']}"})
             try:
-                client = _client(model)
-                if prov == "openai":
-                    plain, citations = _openai_grounded(
-                        client, model, TIER2_SYSTEM, msgs, domains,
-                        int(cfg("websearch.max_uses", "3")))
-                    plain, followups = _parse_followups(plain)
-                    segments = [{"text": plain,
-                                 "citations": list(range(len(citations)))}] if plain else []
-                    used_model = model
-                    refused = False
-                else:
-                    tier2_resp = _run_with_pause_turn(
-                        client,
-                        model=model,
-                        max_tokens=2048,
-                        thinking={"type": "adaptive"},
-                        output_config={"effort": effort},
-                        system=[{"type": "text", "text": TIER2_SYSTEM,
-                                 "cache_control": {"type": "ephemeral"}}],
-                        tools=[{"type": "web_search_20260209", "name": "web_search",
-                                "max_uses": int(cfg("websearch.max_uses", "3")),
-                                "allowed_domains": domains}],
-                        messages=msgs,
-                    )
-                    refused = tier2_resp.stop_reason == "refusal"
-                    segments, citations, plain = _extract_answer(tier2_resp)
-                    plain, followups = _parse_followups(plain)
-                    if segments:
-                        segments[-1]["text"], _ = _parse_followups(segments[-1]["text"])
-                    used_model = tier2_resp.model
+                plain, citations, used_model, refused = _grounded_answer(
+                    model, TIER2_SYSTEM, msgs, domains, effort,
+                    int(cfg("websearch.max_uses", "3")))
             except HTTPException as e:
                 yield sse("error", {"detail": str(e.detail)})
                 return
@@ -622,38 +672,51 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                 yield sse("error", {"detail": f"generation_failed: {e}"})
                 return
 
-            if not refused:
-                not_found = "[[NOT_FOUND]]" in plain or not citations
-                if not not_found:
-                    yield sse("stage", {"label": f"Retrieved {len(citations)} cited passages"})
-                    yield sse("stage", {"label": "Checking groundedness"})
-                    if _judge_grounded(query, plain, citations):
-                        answered_t2 = True
-                        result.update({
-                            "tier": 2, "status": "answered", "answer_text": plain,
-                            "segments": segments, "citations": citations,
-                            "followups": followups, "model_used": used_model,
-                        })
+            plain, followups = _parse_followups(plain)
 
-        # ---------- Tier 3 / withheld ----------
+            if refused:
+                fell(2, "provider_refusal")
+            elif len(citations) < min_chunks:
+                # Retrieval gate: a lone source is not coverage.
+                fell(2, f"below_min_chunks({len(citations)}<{min_chunks})")
+                yield sse("stage", {"label": f"Only {len(citations)} qualifying source"
+                                             f"{'' if len(citations)==1 else 's'} — "
+                                             f"below the minimum of {min_chunks}"})
+            else:
+                yield sse("stage", {"label": f"Retrieved {len(citations)} cited passages"})
+                yield sse("stage", {"label": "Checking the answer against its sources"})
+                v = _verdict(query, plain, citations)
+                if not v["ok"]:
+                    fell(2, "verdict_unavailable")
+                elif not v["answered"]:
+                    # THE regression guard: the model produced prose but it does
+                    # not substantively answer. Never serve this behind a badge.
+                    fell(2, "not_answered")
+                elif not v["grounded"]:
+                    fell(2, "not_grounded")
+                else:
+                    answered_t2 = True
+                    result.update({
+                        "tier": 2, "status": "answered", "answer_text": plain,
+                        "segments": [{"text": plain,
+                                      "citations": list(range(len(citations)))}],
+                        "citations": citations, "followups": followups,
+                        "model_used": used_model,
+                    })
+
+        # ---------- Tier 3 / not found ----------
+        # A not_found response carries tier: null — no badge, no tier styling.
         if not answered_t2:
             tier3_enabled = cfg("answers.allow_tier3", "true") == "true"
             if high_stakes or not tier3_enabled:
                 reason = "high_stakes" if high_stakes else "tier3_disabled"
+                fell(3, reason)
                 yield sse("stage", {"label": "High-stakes query — withholding unverified answer"
                                     if high_stakes else
                                     "Grounded-only mode — no unverified answer shown"})
                 result.update({
-                    "tier": 3, "status": "not_found", "withheld_reason": reason,
-                    "answer_text": (
-                        "Not found in the indexed Indian literature. "
-                        "This looks like a dosing or interaction question, so no "
-                        "unverified general-model answer is shown."
-                        if high_stakes else
-                        "Not found in the allowlisted Indian sources. Pramana is "
-                        "currently in grounded-only mode, so no unverified "
-                        "general-model answer is shown."),
-                    "segments": [], "model_used": None,
+                    "tier": None, "status": "not_found", "withheld_reason": reason,
+                    "answer_text": "", "segments": [], "model_used": None,
                 })
             else:
                 t3_model, t3_prov = model, prov
@@ -674,31 +737,55 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                             messages=msgs,
                         )
                         used = t3.model
-                        plain = ("The model declined to answer this question."
-                                 if t3.stop_reason == "refusal"
-                                 else "\n".join(b.text for b in t3.content if b.type == "text"))
+                        if t3.stop_reason == "refusal":
+                            fell(3, "provider_refusal")
+                            plain = ""       # falls through to not_found below
+                        else:
+                            plain = "\n".join(b.text for b in t3.content if b.type == "text")
                     plain, followups = _parse_followups(plain)
-                except HTTPException as e:
-                    yield sse("error", {"detail": str(e.detail)})
-                    return
                 except Exception as e:
-                    yield sse("error", {"detail": f"generation_failed: {e}"})
-                    return
-                result.update({
-                    "tier": 3, "status": "unverified", "answer_text": plain,
-                    "segments": [{"text": plain, "citations": []}],
-                    "followups": followups, "model_used": used,
-                })
+                    # Tier 3 is the last tier: its failure means not_found,
+                    # not an error page.
+                    fell(3, f"generation_failed:{type(e).__name__}")
+                    plain, followups, used = "", [], None
+                if plain.strip():
+                    result.update({
+                        "tier": 3, "status": "unverified", "answer_text": plain,
+                        "segments": [{"text": plain, "citations": []}],
+                        "followups": followups, "model_used": used,
+                    })
+                else:
+                    fell(3, "empty_answer")
+                    result.update({
+                        "tier": None, "status": "not_found",
+                        "withheld_reason": "all_tiers_failed",
+                        "answer_text": "", "segments": [], "model_used": None,
+                    })
 
         result["latency_ms"] = int((time.time() - started) * 1000)
 
+        # Invariant (regression guard for the "refusal behind a Grounded badge"
+        # bug): a tiered response must carry real content, and a grounded tier
+        # must carry citations. Anything else is downgraded to not_found rather
+        # than shown with a badge.
+        if result.get("tier") is not None:
+            bad = (not (result.get("answer_text") or "").strip()
+                   or (result["tier"] == 2 and not result.get("citations")))
+            if bad:
+                fell(result["tier"], "invariant_violation")
+                result.update({"tier": None, "status": "not_found",
+                               "withheld_reason": "all_tiers_failed",
+                               "answer_text": "", "segments": [],
+                               "citations": [], "model_used": None})
+
         # log + persist the turn (PRD: instrument everything)
         q("""INSERT INTO query_logs(query_id,user_email,conversation_id,query_text,
-             tier,status,high_stakes,latency_ms,model_used,created_at)
-             VALUES(?,?,?,?,?,?,?,?,?,?)""",
+             tier,status,high_stakes,latency_ms,model_used,fallthrough,created_at)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
           (query_id, user["email"], conversation_id, query, result["tier"],
            result["status"], int(high_stakes), result["latency_ms"],
-           result.get("model_used"), now()))
+           result.get("model_used"),
+           json.dumps(falls) if falls else None, now()))
         q("INSERT INTO turns(conversation_id,role,content,tier,created_at) VALUES(?,?,?,?,?)",
           (conversation_id, "user", query, None, now()))
         if result.get("answer_text"):
@@ -1019,9 +1106,11 @@ def gap_log(user: dict = Depends(require_role("editor"))):
     """Corpus-gap register: unanswered / unverified / suggested-source queries."""
     return [dict(r) for r in q("""
         SELECT query_id, query_text, tier, status, high_stakes,
-               suggested_source, created_at
+               suggested_source, fallthrough, created_at
         FROM query_logs
-        WHERE status IN ('not_found','unverified') OR suggested_source=1
+        WHERE status IN ('not_found','unverified')
+           OR suggested_source=1
+           OR fallthrough IS NOT NULL
         ORDER BY created_at DESC LIMIT 200""")]
 
 

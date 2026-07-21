@@ -178,6 +178,28 @@ body.apppage{
 .chip-row{display:flex;flex-wrap:wrap;gap:6px;}
 .checked-chip{font-size:10px;color:var(--muted);background:var(--hair);border-radius:5px;padding:4px 8px;}
 
+/* ---------------- not found (tier: null) ----------------
+   Deliberately unlike any tier treatment: ochre, not green/blue/purple, and
+   carrying no badge — so a refusal can never read as a grounded answer. */
+.nf-card{
+  margin-top:16px;border:1px solid var(--adm-br,#e6d6c6);border-radius:10px;
+  background:var(--adm-bg,#f4ece4);padding:18px 20px;
+}
+.nf-head{
+  display:flex;align-items:center;gap:9px;font-size:14px;font-weight:600;
+  color:var(--adm-ink,#7a4e34);
+}
+.nf-why{margin:10px 0 0;font-size:12.5px;line-height:1.65;color:var(--adm-ink,#7a4e34);}
+.nf-label{
+  margin-top:16px;font-size:9.5px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;color:#a5816a;
+}
+.nf-card .chip-row{margin-top:8px;}
+.nf-card .checked-chip{background:rgba(255,255,255,.7);color:#7a4e34;}
+.nf-actions{margin-top:16px;padding-top:14px;border-top:1px solid var(--adm-br,#e6d6c6);
+  display:flex;align-items:center;}
+.nf-actions .suggest-src{margin-left:0;color:var(--adm-ink,#7a4e34);}
+
 /* ---------------- library ---------------- */
 .lib-list{margin-top:18px;display:flex;flex-direction:column;gap:10px;}
 .lib-item{
