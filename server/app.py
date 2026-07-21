@@ -549,10 +549,15 @@ def _verdict(question: str, answer: str, citations: list[dict]) -> dict:
         try:
             jc = _client(judge_model)
             if provider_of(judge_model) == "openai":
+                # Reasoning models spend max_output_tokens on internal
+                # reasoning first: a small budget returns status=incomplete
+                # with empty output_text, which silently failed every verdict.
                 r = jc.responses.create(model=judge_model,
                                         instructions=VERDICT_SYSTEM,
-                                        input=prompt, max_output_tokens=200)
+                                        input=prompt, max_output_tokens=2000)
                 text = getattr(r, "output_text", "") or ""
+                if getattr(r, "status", "") == "incomplete" and not text.strip():
+                    raise RuntimeError("verdict truncated by token budget")
             else:
                 resp = jc.messages.create(
                     model=judge_model, max_tokens=256,
