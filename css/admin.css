@@ -68,6 +68,20 @@ body.adminpage{background:#fff;background-image:none;overflow:hidden;}
 .field{display:flex;flex-direction:column;}
 .field.f-domain{flex:1;min-width:180px;}
 .field.f-note{flex:2;min-width:240px;}
+.field.f-region{flex:none;min-width:132px;}
+.field select{
+  border:1px solid var(--line-2);border-radius:8px;padding:9px 11px;font-size:12.5px;color:var(--ink);
+  font-family:inherit;outline:none;background:var(--paper);width:100%;cursor:pointer;
+}
+.field select:focus{border-color:var(--ink);}
+/* region tag on each allowlist row — which pass a domain belongs to */
+.rgn{
+  display:inline-block;margin-left:7px;padding:1px 5px;border-radius:3px;vertical-align:1px;
+  white-space:nowrap;
+  font-family:var(--mono);font-size:9px;font-weight:500;letter-spacing:.04em;
+}
+.rgn.ind{background:#eef2ec;border:1px solid #dbe4d8;color:#5c6d58;}
+.rgn.intl{background:#f3efe6;border:1px solid #e0d6c2;color:#7a6636;}
 .field-label{font-size:10.5px;font-weight:600;color:var(--muted-2);margin-bottom:5px;}
 .field-label .opt{color:#b3afa6;font-weight:400;}
 .field input{

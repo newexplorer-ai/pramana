@@ -39,7 +39,10 @@
       { domain:'nmji.in',              note:'National Medical Journal of India — peer-reviewed, AIIMS-affiliated.',          by:'Dr. S. Menon', date:'14 Jun 2026', on:true  },
       { domain:'indianpediatrics.net', note:'Indian Pediatrics — IAP official journal.',                                     by:'Dr. S. Menon', date:'20 Jun 2026', on:true  },
       { domain:'cdsco.gov.in',         note:'Central Drugs Standard Control Organisation — drug approvals & safety.',        by:'Dr. A. Rao',   date:'02 Jul 2026', on:false },
-    ],
+      { domain:'who.int',              note:'World Health Organization — global guidelines and technical reports.',         by:'Dr. A. Rao',   date:'20 Jul 2026', on:true,  region:'INTL' },
+      { domain:'nice.org.uk',          note:'NICE — UK national clinical guidelines.',                                      by:'Dr. A. Rao',   date:'20 Jul 2026', on:true,  region:'INTL' },
+      { domain:'cochranelibrary.com',  note:'Cochrane Library — systematic reviews and meta-analyses.',                     by:'Dr. S. Menon', date:'20 Jul 2026', on:true,  region:'INTL' },
+    ].map(d => ({ region:'IN', ...d })),
     config:[
       { key:'provider.active',        value:'anthropic',         def:'anthropic',       desc:'Which model provider answers questions.',  who:'system', when:'20 Jul 2026', critical:true  },
       { key:'generation.effort',      value:'medium',            def:'medium',          desc:'Effort level for generation.',             who:'system', when:'20 Jul 2026', critical:false },
@@ -115,7 +118,8 @@
     ]);
     if(models) state.providers = models;
     state.domains = domains.map(d => ({ domain:d.domain, note:d.trust_note,
-      by:d.added_by||'—', date:fmtD(d.created_at), on:!!d.enabled }));
+      by:d.added_by||'—', date:fmtD(d.created_at), on:!!d.enabled,
+      region:d.region === 'INTL' ? 'INTL' : 'IN' }));
     state.config = config.map(c => ({ key:c.key, value:c.value, def:c.default_value,
       desc:c.description, who:c.updated_by||'—', when:fmtD(c.updated_at), critical:!!c.critical }));
     state.audit = auditRows.map(a => ({ actor:a.actor, action:a.action,
@@ -204,14 +208,18 @@
   function renderAllowlist(){
     const q = state.search.trim().toLowerCase();
     const f = state.domainFilter || 'live';
-    const total = state.domains.length;
-    const liveN = state.domains.filter(r => r.on).length;
-    const rows = state.domains
+    const rf = state.regionFilter || 'all';
+    const scope = state.domains.filter(r => rf === 'all' || r.region === rf);
+    const total = scope.length;
+    const liveN = scope.filter(r => r.on).length;
+    const inN = state.domains.filter(r => r.region === 'IN').length;
+    const intlN = state.domains.filter(r => r.region === 'INTL').length;
+    const rows = scope
       .filter(r => f === 'all' || (f === 'live' ? r.on : !r.on))
       .filter(r => !q || r.domain.toLowerCase().includes(q) || r.note.toLowerCase().includes(q));
     viewEl.innerHTML = `
       <div class="page-title">Allowed websites</div>
-      <div class="page-lead">Single source of truth for the <code>allowed_domains</code> parameter on every Tier&nbsp;2 web-search call. This list is the entire quality gate on what the product may cite from the web.</div>
+      <div class="page-lead">Single source of truth for the <code>allowed_domains</code> parameter on every Tier&nbsp;2 web-search call. This list is the entire quality gate on what the product may cite from the web. Indian sources are searched first; international ones are only reached when no Indian source can answer.</div>
 
       <form class="add-form" id="addForm" autocomplete="off">
         <div class="field f-domain">
@@ -222,6 +230,10 @@
           <span class="field-label">Trust note <span class="opt">— required</span></span>
           <input id="fNote" type="text" placeholder="Why this source is authoritative">
         </div>
+        <div class="field f-region">
+          <span class="field-label">Region</span>
+          <select id="fRegion"><option value="IN">Indian</option><option value="INTL">International</option></select>
+        </div>
         <button class="add-btn" type="submit">${svg('plus',{w:13,sw:2.2,stroke:'#fff'})}Add domain</button>
       </form>
 
@@ -230,6 +242,11 @@
           <button class="seg-btn ${f==='live'?'on':''}" data-filter="live">Live <span>${liveN}</span></button>
           <button class="seg-btn ${f==='off'?'on':''}" data-filter="off">Off <span>${total-liveN}</span></button>
           <button class="seg-btn ${f==='all'?'on':''}" data-filter="all">All <span>${total}</span></button>
+        </div>
+        <div class="seg">
+          <button class="seg-btn ${rf==='all'?'on':''}" data-region="all">Both <span>${inN+intlN}</span></button>
+          <button class="seg-btn ${rf==='IN'?'on':''}" data-region="IN">Indian <span>${inN}</span></button>
+          <button class="seg-btn ${rf==='INTL'?'on':''}" data-region="INTL">International <span>${intlN}</span></button>
         </div>
         <div class="search-box">${svg('search',{w:12,sw:2,stroke:'#a5a29a'})}<input id="fSearch" type="text" placeholder="Search" value="${esc(state.search)}"></div>
       </div>
@@ -241,7 +258,7 @@
           const i = state.domains.indexOf(r);
           return `
           <div class="tbl-row cols-domains ${r.on?'':'dim'}">
-            <div class="cell-domain">${esc(r.domain)}</div>
+            <div class="cell-domain">${esc(r.domain)} <span class="rgn ${r.region==='INTL'?'intl':'ind'}">${r.region==='INTL'?'INTL':'IN'}</span></div>
             <div class="cell-note">${esc(r.note)}</div>
             <div class="cell-by-wrap"><div class="cell-by">${esc(r.by)}</div><div class="cell-date">${esc(r.date)}</div></div>
             <div class="cell-end"><button class="toggle ${r.on?'on':''}" data-i="${i}" role="switch" aria-checked="${r.on}" aria-label="Enable ${esc(r.domain)}"><span class="knob"></span></button></div>
@@ -252,6 +269,12 @@
     viewEl.querySelectorAll('[data-filter]').forEach(el =>
       el.addEventListener('click', () => {
         state.domainFilter = el.getAttribute('data-filter');
+        renderAllowlist();
+      }));
+
+    viewEl.querySelectorAll('[data-region]').forEach(el =>
+      el.addEventListener('click', () => {
+        state.regionFilter = el.getAttribute('data-region');
         renderAllowlist();
       }));
 
@@ -285,13 +308,15 @@
       if(!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/.test(domain) || state.domains.some(r=>r.domain===domain)){ dEl.classList.add('invalid'); ok=false; } else dEl.classList.remove('invalid');
       if(!note){ nEl.classList.add('invalid'); ok=false; } else nEl.classList.remove('invalid');
       if(!ok) return;
+      const region = viewEl.querySelector('#fRegion').value === 'INTL' ? 'INTL' : 'IN';
       state.search = '';
       if(live()){
-        mutate(() => PRAMANA_API.post('/api/admin/domains', { domain, trust_note: note }));
+        mutate(() => PRAMANA_API.post('/api/admin/domains',
+                                      { domain, trust_note: note, region }));
         return;
       }
-      state.domains.push({ domain, note, by:'Dr. A. Rao', date:today(), on:true });
-      logAudit('create', `domain ${domain} added`);
+      state.domains.push({ domain, note, by:'Dr. A. Rao', date:today(), on:true, region });
+      logAudit('create', `domain ${domain} added (${region})`);
       render();
     });
   }

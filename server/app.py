@@ -85,7 +85,8 @@ CREATE TABLE IF NOT EXISTS auth_sessions(
   token TEXT PRIMARY KEY, email TEXT NOT NULL, created_at TEXT);
 CREATE TABLE IF NOT EXISTS allowlist_domains(
   domain TEXT PRIMARY KEY, trust_note TEXT NOT NULL,
-  enabled INTEGER NOT NULL DEFAULT 1, added_by TEXT, created_at TEXT);
+  enabled INTEGER NOT NULL DEFAULT 1, added_by TEXT, created_at TEXT,
+  region TEXT NOT NULL DEFAULT 'IN');
 CREATE TABLE IF NOT EXISTS app_config(
   key TEXT PRIMARY KEY, value TEXT NOT NULL, default_value TEXT,
   description TEXT, critical INTEGER DEFAULT 0,
@@ -106,7 +107,8 @@ CREATE TABLE IF NOT EXISTS query_logs(
   query_id TEXT PRIMARY KEY, user_email TEXT, conversation_id TEXT,
   query_text TEXT, tier INTEGER, status TEXT, high_stakes INTEGER,
   latency_ms INTEGER, model_used TEXT, feedback TEXT,
-  suggested_source INTEGER DEFAULT 0, fallthrough TEXT, created_at TEXT);
+  suggested_source INTEGER DEFAULT 0, fallthrough TEXT,
+  source_region TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS saved_conversations(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_email TEXT, title TEXT,
   conversation_id TEXT, query TEXT, saved_at TEXT,
@@ -133,6 +135,11 @@ SEED_CONFIG = [
     # grounded path — fewer than this many distinct cited sources falls through.
     ("retrieval.min_chunks", "2", "2",
      "Minimum distinct cited sources before a grounded answer may be served.", 0),
+    # Indian sources are searched first and international ones only if they
+    # fail, so an Indian-grounded answer is never displaced by more abundant
+    # Western guidance. 'indian_only' disables the international fallback.
+    ("search.region_mode", "indian_first", "indian_first",
+     "indian_first | indian_only — whether international sources may answer.", 1),
     # Safety switch: when false, unverified general-model answers are never
     # served — every ungrounded question returns an honest not-found instead.
     ("answers.allow_tier3", "true", "true",
@@ -142,10 +149,25 @@ SEED_CONFIG = [
 ]
 
 
+def _migrate() -> None:
+    """Additive column migrations for already-deployed databases."""
+    cols = {r["name"] for r in q("PRAGMA table_info(query_logs)")}
+    if "fallthrough" not in cols:
+        q("ALTER TABLE query_logs ADD COLUMN fallthrough TEXT")
+    if "source_region" not in cols:
+        q("ALTER TABLE query_logs ADD COLUMN source_region TEXT")
+    dcols = {r["name"] for r in q("PRAGMA table_info(allowlist_domains)")}
+    if "region" not in dcols:
+        q("ALTER TABLE allowlist_domains ADD COLUMN region TEXT NOT NULL DEFAULT 'IN'")
+
+
 def init_db() -> None:
     with _db_lock:
         _db.executescript(SCHEMA)
         _db.commit()
+    # Columns added after first release must exist before any seeding below
+    # touches them, so migrate here rather than after init.
+    _migrate()
     if not q("SELECT 1 FROM allowed_users LIMIT 1"):
         for email, name, role, enabled, by in SEED_USERS:
             q("INSERT INTO allowed_users VALUES(?,?,?,?,?,?,NULL)",
@@ -153,9 +175,11 @@ def init_db() -> None:
     # Domains are additive on every boot so a curated list can grow without a
     # migration. INSERT OR IGNORE deliberately leaves existing rows untouched —
     # an admin's enable/disable decision must never be reverted by a redeploy.
-    for domain, note, enabled in SEED_DOMAINS:
-        q("INSERT OR IGNORE INTO allowlist_domains VALUES(?,?,?,'system',?)",
-          (domain, note, 1 if enabled else 0, now()))
+    for domain, note, enabled, region in SEED_DOMAINS:
+        q("""INSERT INTO allowlist_domains(domain,trust_note,enabled,added_by,created_at,region)
+             VALUES(?,?,?,'system',?,?)
+             ON CONFLICT(domain) DO UPDATE SET region=excluded.region""",
+          (domain, note, 1 if enabled else 0, now(), region))
     # Config is upserted every boot, not seeded once: a running deployment
     # must pick up newly-introduced keys without losing edited values.
     for key, value, default, desc, critical in SEED_CONFIG:
@@ -177,15 +201,7 @@ def init_db() -> None:
            "Paediatrics", "IPGMER Kolkata", now()))
 
 
-def _migrate() -> None:
-    """Additive column migrations for already-deployed databases."""
-    cols = {r["name"] for r in q("PRAGMA table_info(query_logs)")}
-    if "fallthrough" not in cols:
-        q("ALTER TABLE query_logs ADD COLUMN fallthrough TEXT")
-
-
 init_db()
-_migrate()
 
 
 def cfg(key: str, fallback: str = "") -> str:
@@ -638,14 +654,17 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         started = time.time()
         query_id = str(uuid.uuid4())
         high_stakes = bool(HIGH_STAKES_RE.search(query))
-        domains = [r["domain"] for r in
-                   q("SELECT domain FROM allowlist_domains WHERE enabled=1")]
+        rows = q("SELECT domain, region FROM allowlist_domains WHERE enabled=1")
+        by_region = {"IN": [r["domain"] for r in rows if r["region"] == "IN"],
+                     "INTL": [r["domain"] for r in rows if r["region"] == "INTL"]}
+        domains = by_region["IN"] + by_region["INTL"]
         sources_searched = [f"web:{d}" for d in domains]
         history = _load_history(conversation_id)
         result: dict = {
             "query_id": query_id, "conversation_id": conversation_id,
             "high_stakes": high_stakes, "sources_searched": sources_searched,
             "retrieved_at": today(), "citations": [], "followups": [],
+            "source_region": None,
         }
 
         prov = active_provider()
@@ -663,53 +682,69 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         # NOTE: Tier 1 (curated corpus) is out of scope — there is no corpus,
         # no embeddings, no vector store — so the sequence starts at Tier 2.
         answered_t2 = False
-        if not domains:
-            fell(2, "no_enabled_domains")
-        else:
-            yield sse("stage", {"label": f"Searching {len(domains)} allowlisted Indian "
-                                         f"domains via {PROVIDERS[prov]['label']}"})
+        region_mode = cfg("search.region_mode", "indian_first")
+        # Indian first, always. International is a separate, later pass so an
+        # Indian-grounded answer can never be displaced by the far more
+        # abundant Western literature — and so the answer can be badged.
+        passes = [("IN", "Indian")]
+        if region_mode != "indian_only":
+            passes.append(("INTL", "international"))
+
+        for region, label in passes:
+            if answered_t2:
+                break
+            pool = by_region[region]
+            if not pool:
+                fell(2, f"no_enabled_domains:{region}")
+                continue
+            yield sse("stage", {"label": f"Searching {len(pool)} allowlisted {label} "
+                                         f"sources via {PROVIDERS[prov]['label']}"})
             try:
                 plain, citations, used_model, refused = _grounded_answer(
-                    model, TIER2_SYSTEM, msgs, domains, effort,
+                    model, TIER2_SYSTEM, msgs, pool, effort,
                     int(cfg("websearch.max_uses", "3")))
             except HTTPException as e:
                 yield sse("error", {"detail": str(e.detail)})
                 return
             except Exception as e:
-                yield sse("stage", {"label": "Web search unavailable", "state": "warn"})
-                yield sse("error", {"detail": f"generation_failed: {e}"})
-                return
+                yield sse("stage", {"label": f"{label.capitalize()} search unavailable",
+                                    "state": "warn"})
+                fell(2, f"generation_failed:{region}:{type(e).__name__}")
+                continue
 
             plain, followups = _parse_followups(plain)
 
             if refused:
-                fell(2, "provider_refusal")
+                fell(2, f"provider_refusal:{region}")
             elif len(citations) < min_chunks:
                 # Retrieval gate: a lone source is not coverage.
-                fell(2, f"below_min_chunks({len(citations)}<{min_chunks})")
-                yield sse("stage", {"label": f"Only {len(citations)} qualifying source"
-                                             f"{'' if len(citations)==1 else 's'} — "
+                fell(2, f"below_min_chunks:{region}({len(citations)}<{min_chunks})")
+                yield sse("stage", {"label": f"Only {len(citations)} qualifying {label} "
+                                             f"source{'' if len(citations)==1 else 's'} — "
                                              f"below the minimum of {min_chunks}"})
             else:
-                yield sse("stage", {"label": f"Retrieved {len(citations)} cited passages"})
+                yield sse("stage", {"label": f"Retrieved {len(citations)} cited "
+                                             f"{label} passages"})
                 yield sse("stage", {"label": "Checking the answer against its sources"})
                 v = _verdict(query, plain, citations)
                 if not v["ok"]:
-                    fell(2, "verdict_unavailable")
+                    fell(2, f"verdict_unavailable:{region}")
                 elif not v["answered"]:
                     # THE regression guard: the model produced prose but it does
                     # not substantively answer. Never serve this behind a badge.
-                    fell(2, "not_answered")
+                    fell(2, f"not_answered:{region}")
                 elif not v["grounded"]:
-                    fell(2, "not_grounded")
+                    fell(2, f"not_grounded:{region}")
                 else:
                     answered_t2 = True
+                    for c in citations:
+                        c["region"] = region
                     result.update({
                         "tier": 2, "status": "answered", "answer_text": plain,
                         "segments": [{"text": plain,
                                       "citations": list(range(len(citations)))}],
                         "citations": citations, "followups": followups,
-                        "model_used": used_model,
+                        "model_used": used_model, "source_region": region,
                     })
 
         # ---------- Tier 3 / not found ----------
@@ -784,16 +819,19 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                 result.update({"tier": None, "status": "not_found",
                                "withheld_reason": "all_tiers_failed",
                                "answer_text": "", "segments": [],
-                               "citations": [], "model_used": None})
+                               "citations": [], "model_used": None,
+                               "source_region": None})
 
         # log + persist the turn (PRD: instrument everything)
         q("""INSERT INTO query_logs(query_id,user_email,conversation_id,query_text,
-             tier,status,high_stakes,latency_ms,model_used,fallthrough,created_at)
-             VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+             tier,status,high_stakes,latency_ms,model_used,fallthrough,
+             source_region,created_at)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
           (query_id, user["email"], conversation_id, query, result["tier"],
            result["status"], int(high_stakes), result["latency_ms"],
            result.get("model_used"),
-           json.dumps(falls) if falls else None, now()))
+           json.dumps(falls) if falls else None,
+           result.get("source_region"), now()))
         q("INSERT INTO turns(conversation_id,role,content,tier,created_at) VALUES(?,?,?,?,?)",
           (conversation_id, "user", query, None, now()))
         if result.get("answer_text"):
@@ -855,7 +893,8 @@ def library_delete(item_id: int, user: dict = Depends(current_user)):
 
 @app.get("/api/sources")
 def sources():
-    rows = q("SELECT domain, trust_note FROM allowlist_domains WHERE enabled=1 ORDER BY domain")
+    rows = q("""SELECT domain, trust_note, region FROM allowlist_domains
+                WHERE enabled=1 ORDER BY region, domain""")
     return [dict(r) for r in rows]
 
 
@@ -887,10 +926,13 @@ def domains_add(body: dict, user: dict = Depends(require_role("editor"))):
         raise HTTPException(400, "invalid_domain")
     if not note:
         raise HTTPException(400, "trust_note_required")
+    region = "INTL" if str(body.get("region", "IN")).upper() == "INTL" else "IN"
     if q("SELECT 1 FROM allowlist_domains WHERE domain=?", (domain,)):
         raise HTTPException(409, "duplicate")
-    q("INSERT INTO allowlist_domains VALUES(?,?,1,?,?)", (domain, note, user["name"], now()))
-    audit(user["name"], "create", f"domain {domain} added")
+    q("""INSERT INTO allowlist_domains(domain,trust_note,enabled,added_by,
+         created_at,region) VALUES(?,?,1,?,?,?)""",
+      (domain, note, user["name"], now(), region))
+    audit(user["name"], "create", f"domain {domain} added ({region})")
     return {"ok": True}
 
 
@@ -1114,7 +1156,7 @@ def gap_log(user: dict = Depends(require_role("editor"))):
     """Corpus-gap register: unanswered / unverified / suggested-source queries."""
     return [dict(r) for r in q("""
         SELECT query_id, query_text, tier, status, high_stakes,
-               suggested_source, fallthrough, created_at
+               suggested_source, fallthrough, source_region, created_at
         FROM query_logs
         WHERE status IN ('not_found','unverified')
            OR suggested_source=1

@@ -108,8 +108,12 @@ check("no grounded status", r1["status"] != "answered", f"status={r1['status']}"
 check("refusal prose never served as the answer",
       "did not retrieve" not in (r1.get("answer_text") or ""))
 check("fall-through logged with tier+reason",
-      any(f["tier"] == 2 and f["reason"] == "not_answered"
+      any(f["tier"] == 2 and f["reason"].startswith("not_answered")
           for f in (r1.get("fallthrough") or [])),
+      str(r1.get("fallthrough")))
+check("both region passes attempted before falling through",
+      {"not_answered:IN", "not_answered:INTL"} <=
+      {f["reason"] for f in (r1.get("fallthrough") or [])},
       str(r1.get("fallthrough")))
 
 # ---------------------------------------------------------------- test 2
@@ -207,6 +211,80 @@ check("gap log captured fall-through rows", len(gap) > 0, f"rows={len(gap)}")
 check("fall-through reasons persisted to query_logs",
       any(g.get("fallthrough") for g in gap),
       "no fallthrough column populated")
+
+# ---------------------------------------------------------------- test 7
+# Region routing: Indian sources answer first and international is only
+# reached when the Indian pass fails, so abundant Western guidance can
+# never displace an Indian-grounded answer.
+print("\n7. Region routing: Indian first, international as labelled fallback")
+
+INTL_CITE = [{"cited_text": "KDIGO guidance.", "url": "https://kdigo.org/x",
+              "title": "KDIGO", "domain": "kdigo.org"},
+             {"cited_text": "NICE guidance.", "url": "https://nice.org.uk/y",
+              "title": "NICE", "domain": "nice.org.uk"}]
+
+IN_DOMAINS = {d["domain"] for d in CITE}
+
+
+def region_stub(*, indian_answers: bool):
+    """Vary the provider result by which domain pool the router passed in."""
+    seen: list[str] = []
+
+    def _ga(model, system, msgs, pool, effort, max_uses):
+        is_indian = any(d in IN_DOMAINS or d.endswith((".in", ".gov.in"))
+                        for d in pool)
+        seen.append("IN" if is_indian else "INTL")
+        if is_indian:
+            return (("An Indian-grounded answer." if indian_answers else
+                     "Indian sources do not address this."),
+                    CITE, "stub-model", False)
+        return ("An international-grounded answer.", INTL_CITE, "stub-model", False)
+
+    A._grounded_answer = _ga
+    A._verdict = lambda query, answer, cites: {
+        "answered": "do not address" not in answer, "grounded": True, "ok": True}
+    return seen
+
+seen = region_stub(indian_answers=True)
+r7a = ask("A question Indian sources answer?")
+check("Indian answer served as Tier 2", r7a["tier"] == 2, f"tier={r7a['tier']}")
+check("source_region is IN", r7a.get("source_region") == "IN",
+      str(r7a.get("source_region")))
+check("international pass never run when India answers", seen == ["IN"], str(seen))
+check("citations tagged with region",
+      all(c.get("region") == "IN" for c in r7a["citations"]),
+      str(r7a["citations"])[:120])
+
+seen = region_stub(indian_answers=False)
+r7b = ask("A question only international sources answer?")
+check("falls through to international", r7b["tier"] == 2, f"tier={r7b['tier']}")
+check("source_region is INTL", r7b.get("source_region") == "INTL",
+      str(r7b.get("source_region")))
+check("Indian pass attempted first", seen == ["IN", "INTL"], str(seen))
+check("Indian fall-through logged before international answer",
+      any(f["reason"].endswith(":IN") for f in (r7b.get("fallthrough") or [])),
+      str(r7b.get("fallthrough")))
+check("citations tagged INTL",
+      all(c.get("region") == "INTL" for c in r7b["citations"]),
+      str(r7b["citations"])[:120])
+
+# indian_only mode must never reach international sources
+A.q("UPDATE app_config SET value='indian_only' WHERE key='search.region_mode'")
+seen = region_stub(indian_answers=False)
+r7c = ask("indian_only probe")
+check("indian_only never searches international", "INTL" not in seen, str(seen))
+check("indian_only yields no Tier 2 when India cannot answer",
+      r7c["tier"] != 2, f"tier={r7c['tier']}")
+A.q("UPDATE app_config SET value='indian_first' WHERE key='search.region_mode'")
+
+# region-tagged seeding
+counts = {r["region"]: r["n"] for r in A.q(
+    "SELECT region, COUNT(*) n FROM allowlist_domains GROUP BY region")}
+check("both regions seeded", counts.get("IN", 0) > 0 and counts.get("INTL", 0) > 0,
+      str(counts))
+check("source_region persisted to query_logs",
+      bool(A.q("SELECT 1 FROM query_logs WHERE source_region='INTL'")),
+      "no INTL row logged")
 
 print("\n" + "=" * 60)
 if FAILURES:

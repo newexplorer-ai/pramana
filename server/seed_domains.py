@@ -23,8 +23,8 @@ Enable only if an explicitly-labelled AYUSH mode ships.
 STATE_NOTE = "State health department — state guidance; may differ from national policy."
 INST_NOTE = "Institutional protocol; local practice, not national policy."
 
-# (domain, trust_note, enabled)
-SEED_DOMAINS: list[tuple[str, str, bool]] = [
+# (domain, trust_note, enabled) — region is attached below.
+_INDIAN: list[tuple[str, str, bool]] = [
     # ---------------- Band A — live-ready ----------------
     ("icmr.gov.in", "Indian Council of Medical Research — apex national research & guideline body.", True),
     ("main.icmr.nic.in", "ICMR legacy host — Standard Treatment Workflows & guideline archive.", True),
@@ -240,3 +240,180 @@ SEED_DOMAINS: list[tuple[str, str, bool]] = [
 # Entry 157 in the source list, "aiims.edu/aiims/departments/poison", is a page
 # path rather than a domain; allowed_domains takes hosts only, and aiims.edu is
 # already present above, so it is intentionally not repeated here.
+
+
+# ============================================================================
+# INTERNATIONAL — searched only when Indian sources do not answer.
+#
+# Pramana's promise is that an answer is traceable to Indian literature, and
+# the PRD's premise is that general models wrongly default to Western guidance
+# whose dosing, drug availability and epidemiology may not match Indian
+# practice. These sources are therefore a labelled fallback, never mixed
+# silently into an "Indian" answer: every citation carries its region, and an
+# answer grounded here is badged International.
+# ============================================================================
+_INTERNATIONAL: list[tuple[str, str, bool]] = [
+    # --- literature aggregators (the workhorses) ---
+    ("pmc.ncbi.nlm.nih.gov", "PubMed Central — open-access full-text biomedical literature.", True),
+    ("pubmed.ncbi.nlm.nih.gov", "PubMed — indexed biomedical abstracts.", True),
+    ("cochranelibrary.com", "Cochrane — systematic reviews & meta-analyses.", True),
+    ("ncbi.nlm.nih.gov", "NCBI — StatPearls, Bookshelf, GeneReviews.", True),
+    ("clinicaltrials.gov", "US trial registry.", True),
+    ("crd.york.ac.uk", "PROSPERO — systematic review registry.", True),
+    ("epistemonikos.org", "Evidence synthesis database.", True),
+    ("tripdatabase.com", "Clinical evidence search.", True),
+    ("guidelinecentral.com", "Guideline aggregator.", True),
+    ("magicevidence.org", "MAGIC — living guidelines.", True),
+
+    # --- global & national public health bodies ---
+    ("who.int", "World Health Organization — global guidance & essential medicines.", True),
+    ("cdc.gov", "US CDC — infectious disease & prevention guidance.", True),
+    ("ecdc.europa.eu", "European CDC.", True),
+    ("nih.gov", "US National Institutes of Health.", True),
+    ("nhs.uk", "UK NHS — clinical information.", True),
+    ("gov.uk", "UK government — UKHSA guidance.", True),
+    ("paho.org", "Pan American Health Organization.", True),
+    ("unaids.org", "UNAIDS — HIV policy & guidance.", True),
+    ("theunion.org", "International Union Against TB and Lung Disease.", True),
+    ("globalfund.org", "Global Fund — programme guidance.", True),
+
+    # --- guideline development bodies ---
+    ("nice.org.uk", "NICE (UK) — evidence-based clinical guidelines.", True),
+    ("sign.ac.uk", "SIGN (Scotland) — clinical guidelines.", True),
+    ("uspreventiveservicestaskforce.org", "USPSTF — prevention recommendations.", True),
+    ("guidelines.gov", "US guideline clearinghouse — may be retired; verify before enabling.", False),
+    ("g-i-n.net", "Guidelines International Network.", True),
+    ("magicapp.org", "MAGICapp — guideline publication platform.", True),
+    ("cadth.ca", "CADTH (Canada) — HTA & drug reviews.", True),
+    ("sbu.se", "SBU (Sweden) — HTA.", True),
+    ("awmf.org", "AWMF (Germany) — guideline register.", True),
+    ("has-sante.fr", "HAS (France) — health authority guidance.", True),
+
+    # --- drug regulators & formularies ---
+    ("fda.gov", "US FDA — approvals, labels, safety communications.", True),
+    ("ema.europa.eu", "European Medicines Agency.", True),
+    ("mhra.gov.uk", "UK MHRA — drug safety.", True),
+    ("bnf.org", "British National Formulary.", True),
+    ("bnfc.nice.org.uk", "BNF for Children.", True),
+    ("dailymed.nlm.nih.gov", "DailyMed — US drug labelling.", True),
+    ("medsafe.govt.nz", "Medsafe (New Zealand).", True),
+    ("tga.gov.au", "TGA (Australia).", True),
+    ("hc-sc.gc.ca", "Health Canada.", True),
+    ("pmda.go.jp", "PMDA (Japan).", True),
+
+    # --- cardiovascular ---
+    ("escardio.org", "European Society of Cardiology.", True),
+    ("acc.org", "American College of Cardiology.", True),
+    ("heart.org", "American Heart Association.", True),
+    ("ahajournals.org", "AHA journals.", True),
+    ("hrsonline.org", "Heart Rhythm Society.", True),
+    ("eshonline.org", "European Society of Hypertension.", True),
+    ("ish-world.com", "International Society of Hypertension.", True),
+    ("world-heart-federation.org", "World Heart Federation.", True),
+
+    # --- endocrine & diabetes ---
+    ("diabetes.org", "ADA — Standards of Care.", True),
+    ("easd.org", "European Association for the Study of Diabetes.", True),
+    ("idf.org", "International Diabetes Federation.", True),
+    ("endocrine.org", "Endocrine Society.", True),
+    ("aace.com", "AACE.", True),
+    ("thyroid.org", "American Thyroid Association.", True),
+    ("eurothyroid.com", "European Thyroid Association.", True),
+
+    # --- nephrology ---
+    ("kdigo.org", "KDIGO guidelines.", True),
+    ("kidney.org", "KDOQI / National Kidney Foundation.", True),
+    ("era-online.org", "European Renal Association.", True),
+    ("asn-online.org", "American Society of Nephrology.", True),
+    ("theisn.org", "International Society of Nephrology.", True),
+
+    # --- respiratory ---
+    ("ginasthma.org", "GINA — asthma.", True),
+    ("goldcopd.org", "GOLD — COPD.", True),
+    ("ersnet.org", "European Respiratory Society.", True),
+    ("thoracic.org", "American Thoracic Society.", True),
+    ("brit-thoracic.org.uk", "British Thoracic Society.", True),
+
+    # --- infectious disease & AMR ---
+    ("idsociety.org", "IDSA.", True),
+    ("escmid.org", "ESCMID.", True),
+    ("eucast.org", "EUCAST — susceptibility breakpoints.", True),
+    ("clsi.org", "CLSI standards.", True),
+    ("hivinfo.nih.gov", "HIV/ART guidelines (NIH).", True),
+    ("iasusa.org", "IAS-USA.", True),
+    ("sepsis.org", "Sepsis Alliance.", True),
+    ("sccm.org", "Society of Critical Care Medicine — Surviving Sepsis.", True),
+
+    # --- oncology ---
+    ("nccn.org", "NCCN guidelines.", True),
+    ("esmo.org", "ESMO.", True),
+    ("asco.org", "ASCO.", True),
+    ("cancer.gov", "NCI — PDQ.", True),
+    ("uicc.org", "Union for International Cancer Control.", True),
+    ("iarc.who.int", "IARC.", True),
+    ("sabcs.org", "San Antonio Breast Cancer Symposium (verify).", False),
+
+    # --- gastroenterology & hepatology ---
+    ("easl.eu", "EASL.", True),
+    ("aasld.org", "AASLD.", True),
+    ("gastro.org", "American Gastroenterological Association.", True),
+    ("gi.org", "American College of Gastroenterology.", True),
+    ("ueg.eu", "United European Gastroenterology.", True),
+    ("worldgastroenterology.org", "WGO — global guidelines.", True),
+
+    # --- neurology & psychiatry ---
+    ("aan.com", "American Academy of Neurology.", True),
+    ("ean.org", "European Academy of Neurology.", True),
+    ("ilae.org", "International League Against Epilepsy.", True),
+    ("stroke.org", "American Stroke Association.", True),
+    ("world-stroke.org", "World Stroke Organization.", True),
+    ("psychiatry.org", "American Psychiatric Association.", True),
+    ("ihs-headache.org", "International Headache Society — classification.", True),
+    ("movementdisorders.org", "International Parkinson & Movement Disorder Society.", True),
+
+    # --- obstetrics, gynaecology & paediatrics ---
+    ("acog.org", "ACOG.", True),
+    ("rcog.org.uk", "RCOG.", True),
+    ("figo.org", "FIGO.", True),
+    ("aap.org", "American Academy of Pediatrics.", True),
+    ("rcpch.ac.uk", "RCPCH.", True),
+
+    # --- surgery, anaesthesia & critical care ---
+    ("facs.org", "American College of Surgeons.", True),
+    ("rcseng.ac.uk", "Royal College of Surgeons of England.", True),
+    ("esicm.org", "European Society of Intensive Care Medicine.", True),
+    ("asahq.org", "American Society of Anesthesiologists.", True),
+    ("esahq.org", "European Society of Anaesthesiology.", True),
+    ("aagbi.org", "AAGBI.", True),
+    ("atls.org", "ATLS (verify).", False),
+
+    # --- other specialties ---
+    ("rheumatology.org", "American College of Rheumatology.", True),
+    ("eular.org", "EULAR.", True),
+    ("aad.org", "American Academy of Dermatology.", True),
+    ("aao.org", "American Academy of Ophthalmology.", True),
+    ("entnet.org", "American Academy of Otolaryngology.", True),
+    ("auanet.org", "American Urological Association.", True),
+    ("aaos.org", "American Academy of Orthopaedic Surgeons.", True),
+    ("hematology.org", "American Society of Hematology.", True),
+    ("ehaweb.org", "European Hematology Association.", True),
+    ("isth.org", "ISTH — thrombosis & haemostasis.", True),
+    ("acr.org", "American College of Radiology.", True),
+    ("myesr.org", "European Society of Radiology.", True),
+    ("snmmi.org", "SNMMI — nuclear medicine.", True),
+    ("astro.org", "ASTRO — radiation oncology.", True),
+
+    # --- major journals (largely paywalled: expect abstract-level retrieval) ---
+    ("nejm.org", "NEJM — substantially paywalled; expect abstract-level retrieval.", True),
+    ("thelancet.com", "The Lancet — substantially paywalled; expect abstract-level retrieval.", True),
+    ("bmj.com", "The BMJ — substantially paywalled; expect abstract-level retrieval.", True),
+    ("jamanetwork.com", "JAMA Network — substantially paywalled; expect abstract-level retrieval.", True),
+    ("annals.org", "Annals of Internal Medicine — substantially paywalled.", True),
+    ("nature.com", "Nature (incl. Nature Medicine) — substantially paywalled.", True),
+]
+
+# Region-tagged master list: (domain, trust_note, enabled, region)
+SEED_DOMAINS: list[tuple[str, str, bool, str]] = (
+    [(d, n, e, "IN") for d, n, e in _INDIAN]
+    + [(d, n, e, "INTL") for d, n, e in _INTERNATIONAL]
+)

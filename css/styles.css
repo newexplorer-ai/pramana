@@ -225,6 +225,13 @@ button{font-family:inherit;}
 .badge-t1{background:var(--t1-bg);border:1px solid var(--t1-br);color:var(--t1);}
 .badge-t2{background:var(--t2-bg);border:1px solid var(--t2-br);color:var(--t2);}
 .badge-t3{background:var(--t3-bg);border:1px solid var(--t3-br);color:var(--t3-ink);}
+/* still grounded and cited, but not Indian literature — read as a caution,
+   not as a failure, so it sits between the Tier 2 blue and the Tier 3 ochre. */
+.badge-intl{background:#f3efe6;border:1px solid #ddd2ba;color:#7a6636;}
+.intl-note{display:flex;align-items:flex-start;gap:8px;margin-top:12px;padding:10px 13px;
+  background:#faf7f0;border:1px solid #e6dcc6;border-radius:var(--radius-block);
+  font-size:11.5px;line-height:1.55;color:#6f5d33;}
+.intl-note svg{flex:none;margin-top:2px;stroke:#a08b52;}
 
 /* source-grouped answer card */
 .src-card{border:1px solid var(--t1-br);border-radius:var(--radius-block);overflow:hidden;margin-top:14px;}

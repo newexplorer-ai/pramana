@@ -606,17 +606,19 @@
       setStrip(null);
       convoScroll.classList.remove('t3-bg');
       const primary = res.citations[0] || {};
+      const intl = res.source_region === 'INTL';
       convo.innerHTML = `
         <div class="query-echo"><p>${esc(query)}</p></div>
         <div class="answer-head">
           <div class="answer-meta">
-            <span class="badge badge-t2">🌐 Grounded · Web allowlist <span class="t">Tier&nbsp;2</span></span>
+            <span class="badge ${intl?'badge-intl':'badge-t2'}">🌐 Grounded · ${intl?'International':'Indian'} sources <span class="t">Tier&nbsp;2</span></span>
             <span class="stamp">Answered ${esc(res.retrieved_at)}</span>
           </div>
         </div>
+        ${intl?`<div class="intl-note">${svg(I.globe,{w:13,sw:1.9})}<span>No Indian source covered this question, so the answer is grounded in international literature. Check it against Indian availability, dosing, and practice before applying.</span></div>`:''}
         <div class="src-card web">
           <div class="src-head">
-            <div class="src-head-l">${svg(I.globe,{w:14,sw:1.9})}Web · allowlisted domain</div>
+            <div class="src-head-l">${svg(I.globe,{w:14,sw:1.9})}Web · allowlisted ${intl?'international':'Indian'} domain</div>
             <div class="src-head-r">${esc((primary.domain||'').toUpperCase())}</div>
           </div>
           <div class="src-body">
@@ -695,7 +697,7 @@
   function renderLiveRail(res){
     if(res.tier === 2 && res.citations.length){
       railTitle.textContent = `Sources · ${res.citations.length}`;
-      railMode.textContent = 'Grounded';
+      railMode.textContent = res.source_region === 'INTL' ? 'International' : 'Indian';
       railBody.innerHTML = res.citations.map((c,i)=> i===0 ? `
         <div class="rail-card web-card featured" data-cite="c${i}">
           <div class="rail-card-head">
