@@ -363,10 +363,13 @@ PROVIDERS = {
                   "grounded": "enforced",
                   "models": {"generation": "claude-opus-4-8",
                              "judge": "claude-haiku-4-5"}},
+    # Model ids verified against the provider's own models.list(), not
+    # assumed: 'gpt-5.2-mini' does not exist and silently failed every
+    # verdict call, downgrading good grounded answers to unverified.
     "openai":    {"label": "OpenAI (ChatGPT)", "env": "OPENAI_API_KEY",
                   "grounded": "annotations",
                   "models": {"generation": "gpt-5.2",
-                             "judge": "gpt-5.2-mini"}},
+                             "judge": "gpt-5-mini"}},
 }
 
 

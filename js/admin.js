@@ -73,7 +73,7 @@
           models:{ generation:'claude-opus-4-8', judge:'claude-haiku-4-5' } },
         { key:'openai', label:'OpenAI (ChatGPT)', env_var:'OPENAI_API_KEY',
           ready:false, active:false, grounding:'annotations',
-          models:{ generation:'gpt-5.2', judge:'gpt-5.2-mini' } },
+          models:{ generation:'gpt-5.2', judge:'gpt-5-mini' } },
       ],
     },
     audit:[
