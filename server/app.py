@@ -298,9 +298,13 @@ TIER2_SYSTEM = (
     "MoHFW, Indian journals). Rules:\n"
     "1. Every factual claim must come from the search results — the API "
     "attaches citations; never state anything you cannot cite.\n"
-    "2. Be concise: 2-4 sentences of answer, professional register, no preamble.\n"
-    "3. If the allowlisted sources do not contain enough to answer, respond "
-    "with exactly [[NOT_FOUND]] and nothing else.\n"
+    "2. Be concise: 2-4 sentences of answer, professional register, no preamble. "
+    "Write plain prose — no markdown bold, headers, or bullet lists.\n"
+    "3. Answer whenever the search returned relevant material, even if it is "
+    "partial: report what those sources do say and note the limit. Reserve "
+    "[[NOT_FOUND]] (alone, nothing else) for when the search genuinely returned "
+    "nothing on the topic. Do not discard usable sources — a partial grounded "
+    "answer is far more useful than a refusal.\n"
     "4. You are a reference tool, not a clinician: report what the literature "
     "says; do not add practice recommendations of your own.\n"
     "5. After the answer, on a new line, write [[FOLLOWUPS]] followed by two "
@@ -409,8 +413,8 @@ def _openai_grounded(client, model, system, messages, domains, max_uses):
             for a in (getattr(block, "annotations", None) or []):
                 if getattr(a, "type", "") != "url_citation":
                     continue
-                url = getattr(a, "url", "") or ""
-                if url in seen:
+                url = _clean_url(getattr(a, "url", "") or "")
+                if not url or url in seen:
                     continue
                 seen[url] = True
                 citations.append({
@@ -419,7 +423,26 @@ def _openai_grounded(client, model, system, messages, domains, max_uses):
                     "title": getattr(a, "title", "") or "",
                     "domain": re.sub(r"^https?://(www\.)?([^/]+).*$", r"\2", url),
                 })
-    return text.strip(), citations
+    return _strip_md_links(text), citations
+
+
+def _clean_url(url: str) -> str:
+    """Drop the provider's attribution query param from citation links."""
+    return re.sub(r"[?&]utm_source=openai\b", "", url).rstrip("?&")
+
+
+def _strip_md_links(text: str) -> str:
+    """OpenAI interleaves inline markdown links with its annotations. The UI
+    renders citations as pills and a sources rail, so the inline duplicates are
+    noise — remove them and leave clean prose."""
+    # "([label](url))" — a parenthesised citation: drop it entirely.
+    text = re.sub(r"\s*\(\[[^\]]*\]\(https?://[^)]*\)\)", "", text)
+    # "[label](url)" — keep the human-readable label.
+    text = re.sub(r"\[([^\]]*)\]\(https?://[^)]*\)", r"\1", text)
+    # Bare "(https://…)" leftovers, and markdown bold the prompt asks against.
+    text = re.sub(r"\s*\(https?://[^)]*\)", "", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
 def _openai_plain(client, model, system, messages) -> str:
@@ -428,7 +451,7 @@ def _openai_plain(client, model, system, messages) -> str:
         for m in messages)
     resp = client.responses.create(model=model, instructions=system,
                                    input=convo, max_output_tokens=1024)
-    return (getattr(resp, "output_text", "") or "").strip()
+    return _strip_md_links(getattr(resp, "output_text", "") or "")
 
 
 def _parse_followups(text: str) -> tuple[str, list[str]]:
