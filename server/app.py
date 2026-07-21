@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS auth_sessions(
 CREATE TABLE IF NOT EXISTS allowlist_domains(
   domain TEXT PRIMARY KEY, trust_note TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1, added_by TEXT, created_at TEXT,
-  region TEXT NOT NULL DEFAULT 'IN');
+  region TEXT NOT NULL DEFAULT 'IN',
+  priority INTEGER NOT NULL DEFAULT 9999);
 CREATE TABLE IF NOT EXISTS app_config(
   key TEXT PRIMARY KEY, value TEXT NOT NULL, default_value TEXT,
   description TEXT, critical INTEGER DEFAULT 0,
@@ -122,7 +123,7 @@ SEED_USERS = [
     ("r.iyer@aiims.edu", "Dr. R. Iyer", "clinician", 1, "system"),      # test account
     ("p.nair@stjohns.in", "Dr. P. Nair", "clinician", 0, "system"),     # test account (disabled)
 ]
-from seed_domains import SEED_DOMAINS  # (domain, trust_note, enabled) × 199
+from seed_domains import CURATED, SEED_DOMAINS  # catalogue + priority order
 # key, value, default, description, critical
 SEED_CONFIG = [
     # One provider powers everything. Switched from Admin → Models & config.
@@ -159,6 +160,8 @@ def _migrate() -> None:
     dcols = {r["name"] for r in q("PRAGMA table_info(allowlist_domains)")}
     if "region" not in dcols:
         q("ALTER TABLE allowlist_domains ADD COLUMN region TEXT NOT NULL DEFAULT 'IN'")
+    if "priority" not in dcols:
+        q("ALTER TABLE allowlist_domains ADD COLUMN priority INTEGER NOT NULL DEFAULT 9999")
 
 
 def init_db() -> None:
@@ -180,6 +183,13 @@ def init_db() -> None:
              VALUES(?,?,?,'system',?,?)
              ON CONFLICT(domain) DO UPDATE SET region=excluded.region""",
           (domain, note, 1 if enabled else 0, now(), region))
+    # Priority is editorial, not operational, so unlike `enabled` it IS
+    # refreshed every boot: the curated order in seed_domains.py is the
+    # source of truth for which sources get searched first.
+    for region, domains in CURATED.items():
+        for pos, domain in enumerate(domains, 1):
+            q("UPDATE allowlist_domains SET priority=? WHERE domain=? AND region=?",
+              (pos, domain, region))
     # Config is upserted every boot, not seeded once: a running deployment
     # must pick up newly-introduced keys without losing edited values.
     for key, value, default, desc, critical in SEED_CONFIG:
@@ -726,10 +736,10 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         started = time.time()
         query_id = str(uuid.uuid4())
         high_stakes = bool(HIGH_STAKES_RE.search(query))
-        # rowid order is seed order is trust order — batch 1 must carry the
-        # apex bodies, so this ORDER BY is load-bearing, not cosmetic.
+        # Priority order is the curated editorial ranking; batch 1 must carry
+        # the apex bodies, so this ORDER BY is load-bearing, not cosmetic.
         rows = q("""SELECT domain, region FROM allowlist_domains
-                    WHERE enabled=1 ORDER BY rowid""")
+                    WHERE enabled=1 ORDER BY priority, rowid""")
         by_region = {"IN": [r["domain"] for r in rows if r["region"] == "IN"],
                      "INTL": [r["domain"] for r in rows if r["region"] == "INTL"]}
         domains = by_region["IN"] + by_region["INTL"]
