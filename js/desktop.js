@@ -586,19 +586,15 @@
      the syntax. Structure is parsed from raw lines and every text fragment is
      escaped individually — model output is never inserted as HTML. */
   function mdInline(s){
-    return esc(s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    return esc(s)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
   }
   function mdBlocks(raw){
     const out = [];
-    let list = null, quote = [];
+    let list = null;
     const closeList = () => { if(list){ out.push(`</${list}>`); list = null; } };
-    const closeQuote = () => {
-      if(quote.length){
-        out.push(`<blockquote class="ans-q">${quote.join(' ')}</blockquote>`);
-        quote = [];
-      }
-    };
-    const close = () => { closeList(); closeQuote(); };
+    const close = () => closeList();
     for(const line of String(raw||'').split('\n')){
       const t = line.trim();
       if(!t){ close(); continue; }
@@ -607,9 +603,13 @@
         close(); out.push(`<h4 class="ans-h">${mdInline(m[1])}</h4>`); continue;
       }
       if((m = t.match(/^>\s?(.*)$/))){
-        closeList(); quote.push(mdInline(m[1])); continue;
+        // One blockquote per line, deliberately NOT merged the way standard
+        // markdown would: the prompt asks for one quote per line with its own
+        // attribution, so merging runs two sources' words together.
+        closeList();
+        out.push(`<blockquote class="ans-q">${mdInline(m[1])}</blockquote>`);
+        continue;
       }
-      closeQuote();
       if((m = t.match(/^(\d+)[.)]\s+(.*)$/))){
         if(list !== 'ol'){ closeList(); out.push('<ol class="ans-l">'); list = 'ol'; }
         out.push(`<li>${mdInline(m[2])}</li>`); continue;
