@@ -245,6 +245,21 @@ button{font-family:inherit;}
 .src-body{padding:14px 15px;}
 .src-body .prose{font-size:12.5px;line-height:1.78;color:#26241f;}
 .src-body .prose b{font-weight:600;}
+
+/* structured answer prose — headings, mechanism lists, source quotes */
+.prose p{margin:0 0 9px;}
+.prose p:last-child{margin-bottom:0;}
+.prose strong{font-weight:600;color:#161512;}
+.ans-h{font-size:12.5px;font-weight:600;color:#161512;margin:15px 0 7px;letter-spacing:-.005em;}
+.prose > .ans-h:first-child{margin-top:0;}
+.ans-l{margin:0 0 10px;padding-left:19px;}
+.ans-l li{margin-bottom:4px;padding-left:2px;}
+.ans-l li::marker{color:#8d8a82;font-size:.92em;}
+.ans-q{
+  margin:10px 0;padding:2px 0 2px 13px;border-left:2px solid var(--t2-br);
+  color:#4a473f;font-style:italic;
+}
+.pill-row{margin-top:9px;display:flex;flex-wrap:wrap;gap:5px;}
 .src-foot{margin-top:12px;padding-top:12px;border-top:1px solid var(--hair);}
 .src-issuer{font-size:10px;font-weight:600;color:var(--body);}
 .src-title-link{display:block;margin-top:3px;font-size:10.5px;color:var(--ink);text-decoration:underline;text-underline-offset:2px;line-height:1.4;cursor:pointer;}

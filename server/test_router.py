@@ -403,6 +403,20 @@ check("both prompts carry the provenance rule",
       all("NLEM status" in s for s in (in_sys, intl_sys)))
 check("both prompts carry the refusal sentinel",
       all("NO_SUBSTANTIVE_ANSWER" in s for s in (in_sys, intl_sys)))
+check("both prompts ask for structure and quotes",
+      all("LENGTH AND STRUCTURE" in s and "QUOTE THE SOURCES" in s
+          for s in (in_sys, intl_sys)))
+
+# Markdown structure must survive the link stripper: it used to remove bold,
+# which would silently undo the formatting the prompt now asks for.
+md = A._strip_md_links(
+    "## Mechanism\n**60-80%** of cases, see [JASN](https://x.example/a).\n"
+    "> Low-flow states precipitate thrombosis.\n1. Flow falls.")
+check("bold survives the stripper", "**60-80%**" in md, md[:120])
+check("headings survive the stripper", "## Mechanism" in md, md[:120])
+check("blockquotes survive the stripper", "> Low-flow" in md, md[:120])
+check("numbered steps survive the stripper", "1. Flow falls." in md, md[:120])
+check("markdown links are still stripped", "https://x.example" not in md, md[:120])
 
 # the verdict must see region tags, not bare domains
 seen_prompt: list[str] = []

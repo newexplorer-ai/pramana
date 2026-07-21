@@ -130,7 +130,7 @@ SEED_CONFIG = [
     ("provider.active", "anthropic", "anthropic",
      "Which model provider answers questions. Requires that provider's API key.", 1),
     ("generation.effort", "medium", "medium", "Effort level for generation (low|medium|high).", 0),
-    ("websearch.max_uses", "3", "3", "Tier 2 search cap per query.", 0),
+    ("websearch.max_uses", "5", "5", "Tier 2 search cap per query.", 0),
     ("groundedness.judge", "true", "true", "Run the judge model on Tier 2 answers.", 0),
     # Retrieval gate: a single stray source is not coverage. Applied to the
     # grounded path — fewer than this many distinct cited sources falls through.
@@ -368,18 +368,28 @@ _T2_RULES = (
     "NLEM status, or Indian national programme protocols on an international "
     "source. If only international sources cover such a point, say Indian "
     "guidance was not found rather than answering from them.\n"
-    "6. Be concise: 2-4 sentences, professional register, no preamble. Write "
-    "plain prose — no markdown bold, headers, or bullet lists.\n"
-    "7. Answer whenever the search returned relevant material, even if it is "
+    "6. LENGTH AND STRUCTURE. Aim for 150-250 words. Open with a direct answer "
+    "in one or two sentences, then use short section headings (## Heading), a "
+    "numbered list where you are describing a mechanism or sequence, and bold "
+    "for key figures. Professional register, no preamble. Do not pad: if the "
+    "sources support only three sentences, write three sentences.\n"
+    "7. QUOTE THE SOURCES. Include one or two short verbatim quotes (25 words "
+    "or fewer each) drawn from the retrieved passages, on their own line "
+    "prefixed with '> ', and name the body that published each. Quote only "
+    "wording that actually appears in the search results — never paraphrase "
+    "into quotation marks.\n"
+    "8. Answer whenever the search returned relevant material, even if it is "
     "partial: report what those sources do say and note the limit. Do not "
     "discard usable sources — a partial grounded answer is more useful than a "
     "refusal.\n"
-    "8. If the sources do NOT substantively answer the question, do not compose "
+    "9. If the sources do NOT substantively answer the question, do not compose "
     "an answer, do not describe what you searched for, and do not explain what "
     "you could not find. Reply with exactly: NO_SUBSTANTIVE_ANSWER\n"
-    "9. You are a reference tool, not a clinician: report what the literature "
+    "10. You are a reference tool, not a clinician: report what the literature "
     "says; do not add practice recommendations of your own.\n"
-    "10. After the answer, on a new line, write [[FOLLOWUPS]] followed by two "
+    "11. Where the evidence is associative rather than causal, or contested, "
+    "say so plainly rather than flattening it into a single claim.\n"
+    "12. After the answer, on a new line, write [[FOLLOWUPS]] followed by two "
     "short follow-up questions separated by ' | '."
 )
 
@@ -588,9 +598,9 @@ def _strip_md_links(text: str) -> str:
     text = re.sub(r"\s*\(\[[^\]]*\]\(https?://[^)]*\)\)", "", text)
     # "[label](url)" — keep the human-readable label.
     text = re.sub(r"\[([^\]]*)\]\(https?://[^)]*\)", r"\1", text)
-    # Bare "(https://…)" leftovers, and markdown bold the prompt asks against.
+    # Bare "(https://…)" leftovers. Bold, headings and lists are deliberately
+    # preserved now — the prompt asks for them and the UI renders them.
     text = re.sub(r"\s*\(https?://[^)]*\)", "", text)
-    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
     return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 

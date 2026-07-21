@@ -581,14 +581,58 @@
   }
 
   /* Render prose from contract segments: escaped text + one pill per citation. */
+  /* Minimal markdown for answer prose. The model now emits headings, numbered
+     steps, quotes and bold (Tier 2 prompt rules 6-7), so raw text would show
+     the syntax. Structure is parsed from raw lines and every text fragment is
+     escaped individually — model output is never inserted as HTML. */
+  function mdInline(s){
+    return esc(s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  }
+  function mdBlocks(raw){
+    const out = [];
+    let list = null, quote = [];
+    const closeList = () => { if(list){ out.push(`</${list}>`); list = null; } };
+    const closeQuote = () => {
+      if(quote.length){
+        out.push(`<blockquote class="ans-q">${quote.join(' ')}</blockquote>`);
+        quote = [];
+      }
+    };
+    const close = () => { closeList(); closeQuote(); };
+    for(const line of String(raw||'').split('\n')){
+      const t = line.trim();
+      if(!t){ close(); continue; }
+      let m;
+      if((m = t.match(/^#{1,6}\s+(.*)$/))){
+        close(); out.push(`<h4 class="ans-h">${mdInline(m[1])}</h4>`); continue;
+      }
+      if((m = t.match(/^>\s?(.*)$/))){
+        closeList(); quote.push(mdInline(m[1])); continue;
+      }
+      closeQuote();
+      if((m = t.match(/^(\d+)[.)]\s+(.*)$/))){
+        if(list !== 'ol'){ closeList(); out.push('<ol class="ans-l">'); list = 'ol'; }
+        out.push(`<li>${mdInline(m[2])}</li>`); continue;
+      }
+      if((m = t.match(/^[-*•]\s+(.*)$/))){
+        if(list !== 'ul'){ closeList(); out.push('<ul class="ans-l">'); list = 'ul'; }
+        out.push(`<li>${mdInline(m[1])}</li>`); continue;
+      }
+      closeList();
+      out.push(`<p>${mdInline(t)}</p>`);
+    }
+    close();
+    return out.join('');
+  }
+
   function liveProse(res){
     return (res.segments||[]).map(seg => {
       const pills = (seg.citations||[]).map(i => {
         const c = res.citations[i];
         return `<span class="pill web" data-cite="c${i}"><span class="dotc"></span>${esc((c.domain||'web').toUpperCase())}</span>`;
       }).join('');
-      return esc(seg.text).replace(/\n/g,'<br>') + pills;
-    }).join(' ');
+      return mdBlocks(seg.text) + (pills ? `<div class="pill-row">${pills}</div>` : '');
+    }).join('');
   }
 
   function renderLiveAnswer(res, query){
