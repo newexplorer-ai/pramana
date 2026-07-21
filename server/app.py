@@ -139,8 +139,13 @@ SEED_CONFIG = [
     # Indian sources are searched first and international ones only if they
     # fail, so an Indian-grounded answer is never displaced by more abundant
     # Western guidance. 'indian_only' disables the international fallback.
-    ("search.region_mode", "indian_first", "indian_first",
-     "indian_first | indian_only — whether international sources may answer.", 1),
+    ("search.region_mode", "mixed", "indian_first",
+     "indian_first (Indian pool searched alone first) | mixed (both regions in "
+     "one call) | indian_only (no international fallback).", 1),
+    # Mixed mode only. Indian slots in the first call; the rest of the cap goes
+    # to international. Higher = stronger Indian presence in the ranked pool.
+    ("search.mixed_indian_slots", "40", "40",
+     "Mixed mode: Indian sources in the first search call (rest are international).", 1),
     # Safety switch: when false, unverified general-model answers are never
     # served — every ungrounded question returns an honest not-found instead.
     ("answers.allow_tier3", "true", "true",
@@ -337,6 +342,12 @@ _T2_POOL = {
     "INTL": ("No Indian source in the vetted pool covered this question, so "
              "results come from international guideline and literature "
              "sources (WHO, NICE, KDIGO, PMC and similar) only."),
+    # Both regions in one result set: rules 2-4 below are the only thing
+    # keeping Indian sources in front, since the pool no longer does it.
+    "MIXED": ("Results come from a vetted pool of Indian sources (ICMR, MoHFW, "
+              "Indian journals) and, for this question, may also include "
+              "international guideline and literature sources (WHO, NICE, "
+              "KDIGO, PMC and similar)."),
 }
 
 _T2_RULES = (
@@ -378,7 +389,7 @@ def tier2_system(region: str) -> str:
     return ("You are Pramana, a literature reference tool for Indian "
             "healthcare professionals. Answer the clinical question using ONLY "
             "the web search results. "
-            f"{_T2_POOL['INTL' if region == 'INTL' else 'IN']}\n\n{_T2_RULES}")
+            f"{_T2_POOL.get(region, _T2_POOL['IN'])}\n\n{_T2_RULES}")
 
 # The router's ONLY refusal signal. Returned by a dedicated structured call
 # because Anthropic rejects structured output combined with the Citations
@@ -460,6 +471,27 @@ def _domain_batches(domains: list[str], cap: int) -> list[list[str]]:
     if cap <= 0:
         return [domains]
     return [domains[i:i + cap] for i in range(0, len(domains), cap)] or [[]]
+
+
+def _mixed_batches(by_region: dict, indian_slots: int, cap: int) -> list[tuple]:
+    """Interleave both regions into cap-sized calls, priority order preserved.
+
+    Call 1 takes the top `indian_slots` Indian sources and fills the rest of
+    the cap with international ones; later calls take what is left, still
+    highest-priority first. Every enabled domain is reached exactly once.
+    """
+    rest = max(cap - indian_slots, 0)
+    ins, intls = list(by_region["IN"]), list(by_region["INTL"])
+    out, n = [], 0
+    while ins or intls:
+        n += 1
+        take_in = ins[:indian_slots] if n == 1 else ins[:cap - min(len(intls), rest)]
+        ins = ins[len(take_in):]
+        batch = take_in + intls[:cap - len(take_in)]
+        intls = intls[cap - len(take_in):]
+        out.append(("MIXED", "Indian + international", batch, n, 0))
+    # Second pass fills in the now-known total so the UI can say "1 of 2".
+    return [(r, l, b, i, len(out)) for r, l, b, i, _ in out]
 
 
 def active_provider() -> str:
@@ -742,6 +774,18 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                     WHERE enabled=1 ORDER BY priority, rowid""")
         by_region = {"IN": [r["domain"] for r in rows if r["region"] == "IN"],
                      "INTL": [r["domain"] for r in rows if r["region"] == "INTL"]}
+        region_of = {r["domain"]: r["region"] for r in rows}
+
+        def cite_region(domain: str) -> str:
+            """Region of a cited domain. Falls back to suffix match because
+            providers return hosts like www.who.int for an allowlisted who.int."""
+            d = (domain or "").lower().removeprefix("www.")
+            if d in region_of:
+                return region_of[d]
+            for known, reg in region_of.items():
+                if d == known or d.endswith("." + known):
+                    return reg
+            return "INTL"          # unknown host is never treated as Indian
         domains = by_region["IN"] + by_region["INTL"]
         sources_searched = [f"web:{d}" for d in domains]
         history = _load_history(conversation_id)
@@ -768,22 +812,28 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         # no embeddings, no vector store — so the sequence starts at Tier 2.
         answered_t2 = False
         region_mode = cfg("search.region_mode", "indian_first")
-        # Indian first, always. International is a separate, later pass so an
-        # Indian-grounded answer can never be displaced by the far more
-        # abundant Western literature — and so the answer can be badged.
-        passes = [("IN", "Indian")]
-        if region_mode != "indian_only":
-            passes.append(("INTL", "international"))
-
         # Providers cap allowed_domains, so a pool larger than the cap is
-        # rejected outright and Tier 2 never runs. Split into ordered batches
-        # and fall through them the same way regions fall through.
+        # rejected outright and Tier 2 never runs.
         cap = int(cfg("search.max_domains_per_call",
                       str(PROVIDERS[prov].get("max_domains", 100))))
-        batched = [(region, label, batch, n + 1, len(bs))
-                   for region, label in passes
-                   for bs in [_domain_batches(by_region[region], cap)]
-                   for n, batch in enumerate(bs)]
+
+        if region_mode == "mixed":
+            # One pool per call, both regions present. Precedence is no longer
+            # structural — it rests on the prompt's PROVENANCE rule — so the
+            # answer's region is derived from the citations it actually used.
+            n_in = int(cfg("search.mixed_indian_slots", "40"))
+            batched = _mixed_batches(by_region, n_in, cap)
+        else:
+            # Indian first. International is a separate, later pass so an
+            # Indian-grounded answer can never be displaced by the far more
+            # abundant Western literature — and so the answer can be badged.
+            passes = [("IN", "Indian")]
+            if region_mode != "indian_only":
+                passes.append(("INTL", "international"))
+            batched = [(region, label, batch, n + 1, len(bs))
+                       for region, label in passes
+                       for bs in [_domain_batches(by_region[region], cap)]
+                       for n, batch in enumerate(bs)]
 
         for region, label, pool, bn, btotal in batched:
             if answered_t2:
@@ -829,8 +879,9 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                 yield sse("stage", {"label": "Checking the answer against its sources"})
                 # Tag before the verdict: the judge decides provenance from the
                 # [IN]/[INTL] markers, so untagged citations would read as Indian.
+                # Tagged per domain, not per pass — a mixed pool returns both.
                 for c in citations:
-                    c["region"] = region
+                    c["region"] = cite_region(c.get("domain", ""))
                 v = _verdict(query, plain, citations)
                 if not v["ok"]:
                     fell(2, f"verdict_unavailable:{tag}")
@@ -847,12 +898,18 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                     fell(2, f"provenance_violation:{tag}")
                 else:
                     answered_t2 = True
+                    # Derived from what was actually cited, not from which pool
+                    # was searched: a mixed pool can produce a purely Indian
+                    # answer, and the badge must reflect the sources used.
+                    cregions = {c["region"] for c in citations}
                     result.update({
                         "tier": 2, "status": "answered", "answer_text": plain,
                         "segments": [{"text": plain,
                                       "citations": list(range(len(citations)))}],
                         "citations": citations, "followups": followups,
-                        "model_used": used_model, "source_region": region,
+                        "model_used": used_model,
+                        "source_region": (cregions.pop() if len(cregions) == 1
+                                          else "MIXED"),
                     })
 
         # ---------- Tier 3 / not found ----------

@@ -606,19 +606,22 @@
       setStrip(null);
       convoScroll.classList.remove('t3-bg');
       const primary = res.citations[0] || {};
-      const intl = res.source_region === 'INTL';
+      const intl  = res.source_region === 'INTL';
+      const mixed = res.source_region === 'MIXED';
+      const rlabel = mixed ? 'Indian + international' : intl ? 'International' : 'Indian';
       convo.innerHTML = `
         <div class="query-echo"><p>${esc(query)}</p></div>
         <div class="answer-head">
           <div class="answer-meta">
-            <span class="badge ${intl?'badge-intl':'badge-t2'}">🌐 Grounded · ${intl?'International':'Indian'} sources <span class="t">Tier&nbsp;2</span></span>
+            <span class="badge ${intl||mixed?'badge-intl':'badge-t2'}">🌐 Grounded · ${rlabel} sources <span class="t">Tier&nbsp;2</span></span>
             <span class="stamp">Answered ${esc(res.retrieved_at)}</span>
           </div>
         </div>
         ${intl?`<div class="intl-note">${svg(I.globe,{w:13,sw:1.9})}<span>No Indian source covered this question, so the answer is grounded in international literature. Check it against Indian availability, dosing, and practice before applying.</span></div>`:''}
+        ${mixed?`<div class="intl-note">${svg(I.globe,{w:13,sw:1.9})}<span>This answer draws on both Indian and international sources — check the region tag on each citation. Claims resting on international literature may not match Indian availability, dosing, or practice.</span></div>`:''}
         <div class="src-card web">
           <div class="src-head">
-            <div class="src-head-l">${svg(I.globe,{w:14,sw:1.9})}Web · allowlisted ${intl?'international':'Indian'} domain</div>
+            <div class="src-head-l">${svg(I.globe,{w:14,sw:1.9})}Web · allowlisted ${rlabel.toLowerCase()} domain</div>
             <div class="src-head-r">${esc((primary.domain||'').toUpperCase())}</div>
           </div>
           <div class="src-body">
@@ -697,11 +700,15 @@
   function renderLiveRail(res){
     if(res.tier === 2 && res.citations.length){
       railTitle.textContent = `Sources · ${res.citations.length}`;
-      railMode.textContent = res.source_region === 'INTL' ? 'International' : 'Indian';
+      railMode.textContent = res.source_region === 'MIXED' ? 'IN + INTL'
+                           : res.source_region === 'INTL'  ? 'International' : 'Indian';
+      // Per-citation region tag: with a mixed pool the answer's own badge no
+      // longer tells you which claim rests on which body's literature.
+      const rtag = c => `<span class="rgn ${c.region==='INTL'?'intl':'ind'}">${c.region==='INTL'?'INTL':'IN'}</span>`;
       railBody.innerHTML = res.citations.map((c,i)=> i===0 ? `
         <div class="rail-card web-card featured" data-cite="c${i}">
           <div class="rail-card-head">
-            <div class="rail-src blue">${svg('<circle cx="12" cy="12" r="9"/>',{w:7,sw:3,stroke:'#445f7a'})}${esc((c.domain||'').toUpperCase())}</div>
+            <div class="rail-src blue">${svg('<circle cx="12" cy="12" r="9"/>',{w:7,sw:3,stroke:'#445f7a'})}${esc((c.domain||'').toUpperCase())}${rtag(c)}</div>
             <span class="rail-page">web page</span>
           </div>
           <div class="rail-card-body">
@@ -713,7 +720,7 @@
         </div>` : `
         <div class="rail-card web-card compact" data-cite="c${i}">
           <div class="rail-compact-head">
-            <div class="rail-src blue">${svg('<circle cx="12" cy="12" r="9"/>',{w:7,sw:3,stroke:'#445f7a'})}${esc((c.domain||'').toUpperCase())}</div>
+            <div class="rail-src blue">${svg('<circle cx="12" cy="12" r="9"/>',{w:7,sw:3,stroke:'#445f7a'})}${esc((c.domain||'').toUpperCase())}${rtag(c)}</div>
             <a href="${esc(c.url)}" target="_blank" rel="noopener" class="chev" style="text-decoration:none;">↗</a>
           </div>
           <div class="rail-doc-title">${esc(c.title||c.url)}</div>

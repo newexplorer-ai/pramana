@@ -47,6 +47,10 @@ def token() -> str:
 
 AUTH = {"Authorization": f"Bearer {token()}"}
 
+# Tests 1-9 exercise sequential routing; test 10 switches to mixed. Pin the
+# mode rather than inheriting whatever the seeded default happens to be.
+A.q("UPDATE app_config SET value='indian_first' WHERE key='search.region_mode'")
+
 
 def ask(query: str) -> dict:
     """Drive /api/ask and return the parsed `result` event."""
@@ -415,6 +419,93 @@ A._verdict = _spy_verdict
 ask("tagging probe")
 check("citations tagged before the verdict call",
       seen_prompt and "[None]" not in seen_prompt[0], str(seen_prompt))
+
+# --------------------------------------------------------------- test 10
+# Mixed mode: both regions in one call, Indian slots first. Precedence is
+# no longer structural, so the badge must come from the citations used.
+print("\n10. Mixed mode: 40 Indian + 60 international in the first call")
+A.q("UPDATE app_config SET value='mixed' WHERE key='search.region_mode'")
+A.q("UPDATE app_config SET value='40' WHERE key='search.mixed_indian_slots'")
+
+mcalls: list[tuple[str, list]] = []
+
+
+def _mcapture(model, system, msgs, pool, effort, max_uses):
+    mcalls.append((system, list(pool)))
+    return ("No answer here.", [], "stub-model", False)
+
+
+A._grounded_answer = _mcapture
+A._verdict = lambda q, a, c: {"answered": False, "grounded": True,
+                              "provenance_ok": True, "ok": True}
+A._openai_plain = lambda *a, **k: ""
+mcalls.clear()
+ask("mixed mode probe")
+
+CAP = A.PROVIDERS[A.active_provider()].get("max_domains", 100)
+first = mcalls[0][1]
+check("first call splits 40 Indian / 60 international",
+      len([d for d in first if d in live_in]) == 40
+      and len([d for d in first if d in live_intl]) == 60,
+      f"IN={len([d for d in first if d in live_in])} "
+      f"INTL={len([d for d in first if d in live_intl])}")
+check("first call is highest-priority Indian sources",
+      first[0] == "icmr.gov.in", str(first[:3]))
+check("no mixed batch exceeds the cap",
+      all(len(p) <= CAP for _, p in mcalls),
+      f"sizes={[len(p) for _, p in mcalls]}")
+mseen = [d for _, p in mcalls for d in p]
+check("every enabled domain reached exactly once",
+      sorted(mseen) == sorted(live_in | live_intl),
+      f"sent={len(mseen)} unique={len(set(mseen))} pool={len(live_in|live_intl)}")
+check("mixed prompt tells the model both regions may appear",
+      "may also include" in mcalls[0][0], mcalls[0][0][:200])
+
+# the badge must follow the citations, not the pool
+MIX = [{"cited_text": "ICMR says.", "url": "https://icmr.gov.in/a",
+        "title": "ICMR", "domain": "icmr.gov.in"},
+       {"cited_text": "KDIGO says.", "url": "https://kdigo.org/b",
+        "title": "KDIGO", "domain": "kdigo.org"}]
+A._grounded_answer = lambda *a, **k: ("A mixed answer.", [dict(c) for c in MIX],
+                                      "stub-model", False)
+A._verdict = lambda q, a, c: {"answered": True, "grounded": True,
+                              "provenance_ok": True, "ok": True}
+r10 = ask("mixed citation probe")
+check("mixed citations → source_region MIXED",
+      r10.get("source_region") == "MIXED", str(r10.get("source_region")))
+check("each citation carries its own region",
+      [c["region"] for c in r10["citations"]] == ["IN", "INTL"],
+      str([(c["domain"], c.get("region")) for c in r10["citations"]]))
+
+A._grounded_answer = lambda *a, **k: ("An Indian answer.", [dict(c) for c in CITE],
+                                      "stub-model", False)
+r10b = ask("mixed but indian-only citations probe")
+check("Indian-only citations from a mixed pool → source_region IN",
+      r10b.get("source_region") == "IN", str(r10b.get("source_region")))
+
+# an unrecognised host must never be badged Indian
+A._grounded_answer = lambda *a, **k: (
+    "From somewhere else.",
+    [{"cited_text": "x", "url": "https://unknown.example/a",
+      "title": "?", "domain": "unknown.example"},
+     {"cited_text": "y", "url": "https://other.example/b",
+      "title": "?", "domain": "other.example"}], "stub-model", False)
+r10c = ask("unknown host probe")
+check("unknown host is not treated as Indian",
+      r10c.get("source_region") != "IN", str(r10c.get("source_region")))
+
+# www-prefixed and sub-hosts of an allowlisted domain resolve to its region
+A._grounded_answer = lambda *a, **k: (
+    "From WHO.",
+    [{"cited_text": "x", "url": "https://www.who.int/a",
+      "title": "WHO", "domain": "www.who.int"},
+     {"cited_text": "y", "url": "https://apps.who.int/b",
+      "title": "WHO", "domain": "apps.who.int"}], "stub-model", False)
+r10d = ask("www-prefixed host probe")
+check("www-prefixed and sub-hosts resolve to their region",
+      r10d.get("source_region") == "INTL", str(r10d.get("source_region")))
+
+A.q("UPDATE app_config SET value='indian_first' WHERE key='search.region_mode'")
 
 print("\n" + "=" * 60)
 if FAILURES:
