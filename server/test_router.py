@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient                 # noqa: E402
 
 client = TestClient(A.app)
 FAILURES: list[str] = []
+REAL_VERDICT = A._verdict          # kept before the stubs replace it
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -285,6 +286,108 @@ check("both regions seeded", counts.get("IN", 0) > 0 and counts.get("INTL", 0) >
 check("source_region persisted to query_logs",
       bool(A.q("SELECT 1 FROM query_logs WHERE source_region='INTL'")),
       "no INTL row logged")
+
+# ---------------------------------------------------------------- test 8
+# Provenance: a dosing/NLEM/programme claim resting on international
+# sources must be refused with the same severity as an ungrounded one.
+print("\n8. Provenance violation refused like an ungrounded answer")
+A._grounded_answer = lambda *a, **k: (
+    "Generally the dose is 5 mg/kg daily.", list(CITE), "stub-model", False)
+A._verdict = lambda *a, **k: {"answered": True, "grounded": True,
+                              "provenance_ok": False, "ok": True}
+A._openai_plain = lambda *a, **k: ""
+r8 = ask("What is the dose in renal impairment?")
+check("provenance violation → never Tier 2", r8["tier"] != 2, f"tier={r8['tier']}")
+check("provenance fall-through logged",
+      any(f["reason"].startswith("provenance_violation")
+          for f in (r8.get("fallthrough") or [])),
+      str(r8.get("fallthrough")))
+
+# A judge that omits provenance_ok must not refuse every answer — defaulting
+# the absent key to False would silently kill the whole Indian pass.
+class _JudgeResp:
+    class _B:
+        type = "text"
+        text = '{"answered": true, "grounded": true}'
+    content = [_B()]
+
+
+class _JudgeClient:
+    class messages:
+        @staticmethod
+        def create(**k):
+            return _JudgeResp()
+
+
+A._client = lambda model: _JudgeClient()
+v = REAL_VERDICT("q", "a", [{"cited_text": "x", "domain": "icmr.gov.in",
+                             "region": "IN"}])
+check("absent provenance_ok defaults to permissive",
+      v["provenance_ok"] is True and v["ok"] is True, str(v))
+check("no citations → provenance_ok is False",
+      REAL_VERDICT("q", "a", [])["provenance_ok"] is False)
+
+# ---------------------------------------------------------------- test 9
+# Snapshot: the pool sent and the prompt describing it must agree. This is
+# the class of test that would have caught the Indian-prompt-with-
+# international-pool defect.
+print("\n9. Snapshot: assembled prompt matches the pool actually sent")
+INTL_SET = {d["domain"] for d in INTL_CITE} | {"who.int", "nice.org.uk"}
+calls: list[tuple[str, list]] = []
+
+
+def _capture(model, system, msgs, pool, effort, max_uses):
+    calls.append((system, list(pool)))
+    return ("Indian sources do not address this.", CITE, "stub-model", False)
+
+
+A._grounded_answer = _capture
+A._verdict = lambda q, a, c: {"answered": False, "grounded": True,
+                              "provenance_ok": True, "ok": True}
+A._openai_plain = lambda *a, **k: ""
+calls.clear()
+ask("A question that exhausts both passes?")
+
+check("two passes ran", len(calls) == 2, f"passes={len(calls)}")
+in_sys, in_pool = calls[0]
+intl_sys, intl_pool = calls[1]
+
+# the India-specific pass must carry zero international domains
+live_intl = {r["domain"] for r in
+             A.q("SELECT domain FROM allowlist_domains WHERE enabled=1 AND region='INTL'")}
+check("Indian pool contains zero INTL domains",
+      not (set(in_pool) & live_intl),
+      str(sorted(set(in_pool) & live_intl))[:120])
+check("international pool contains only INTL domains",
+      set(intl_pool) <= live_intl,
+      str(sorted(set(intl_pool) - live_intl))[:120])
+check("pools are disjoint", not (set(in_pool) & set(intl_pool)))
+
+# prompt text must describe the pool it was sent with
+check("Indian prompt does not claim international results",
+      "international guideline and literature" not in in_sys, in_sys[:160])
+check("international prompt says no Indian source covered it",
+      "No Indian source" in intl_sys, intl_sys[:160])
+check("both prompts carry the provenance rule",
+      all("NLEM status" in s for s in (in_sys, intl_sys)))
+check("both prompts carry the refusal sentinel",
+      all("NO_SUBSTANTIVE_ANSWER" in s for s in (in_sys, intl_sys)))
+
+# the verdict must see region tags, not bare domains
+seen_prompt: list[str] = []
+A._grounded_answer = lambda *a, **k: ("An answer.", list(INTL_CITE), "m", False)
+
+
+def _spy_verdict(question, answer, citations):
+    seen_prompt.append("".join(
+        f"[{c.get('region')}]" for c in citations))
+    return {"answered": True, "grounded": True, "provenance_ok": True, "ok": True}
+
+
+A._verdict = _spy_verdict
+ask("tagging probe")
+check("citations tagged before the verdict call",
+      seen_prompt and "[None]" not in seen_prompt[0], str(seen_prompt))
 
 print("\n" + "=" * 60)
 if FAILURES:

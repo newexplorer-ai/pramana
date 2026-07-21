@@ -315,27 +315,60 @@ def signout(authorization: str = Header(default="")):
 HIGH_STAKES_RE = re.compile(
     r"\b(dos(e|es|ing|age)|mg/kg|interaction|contraindicat|overdose|titrat)", re.I)
 
-TIER2_SYSTEM = (
-    "You are Pramana, a literature reference tool for Indian healthcare "
-    "professionals. Answer the clinical question using ONLY the web search "
-    "results, which are restricted to vetted Indian medical domains (ICMR, "
-    "MoHFW, Indian journals). Rules:\n"
+# The two Tier 2 passes send single-region pools, so the prompt is assembled
+# per pass: telling the model its results are Indian while handing it KDIGO
+# and WHO invites it to conclude the search misfired and refuse. The
+# provenance rules stay in both variants — on the Indian pass they are inert,
+# on the international pass they are the guard that stops dosing, NLEM, and
+# national-programme claims being answered from foreign guidance.
+_T2_POOL = {
+    "IN": ("Results come from a vetted pool of Indian sources (ICMR, MoHFW, "
+           "Indian journals and professional societies)."),
+    "INTL": ("No Indian source in the vetted pool covered this question, so "
+             "results come from international guideline and literature "
+             "sources (WHO, NICE, KDIGO, PMC and similar) only."),
+}
+
+_T2_RULES = (
+    "Rules:\n"
     "1. Every factual claim must come from the search results — the API "
     "attaches citations; never state anything you cannot cite.\n"
-    "2. Be concise: 2-4 sentences of answer, professional register, no preamble. "
-    "Write plain prose — no markdown bold, headers, or bullet lists.\n"
-    "3. Answer whenever the search returned relevant material, even if it is "
+    "2. PROVENANCE. Indian sources take precedence. Where an Indian source "
+    "addresses the question, lead with it and state it as the answer. Use "
+    "international sources for what Indian sources do not cover — mechanism, "
+    "pathophysiology, general pharmacology, evidence base.\n"
+    "3. Make provenance visible in the prose. When a claim rests on "
+    "international literature, attribute it in-line (\"international guidance "
+    "from KDIGO states…\", \"WHO recommends…\"). A reader must never be unsure "
+    "which body a claim came from.\n"
+    "4. Where Indian and international guidance differ substantively, say so "
+    "and give both positions. Never silently reconcile them.\n"
+    "5. Never base a claim about drug dosing, drug availability, formulary or "
+    "NLEM status, or Indian national programme protocols on an international "
+    "source. If only international sources cover such a point, say Indian "
+    "guidance was not found rather than answering from them.\n"
+    "6. Be concise: 2-4 sentences, professional register, no preamble. Write "
+    "plain prose — no markdown bold, headers, or bullet lists.\n"
+    "7. Answer whenever the search returned relevant material, even if it is "
     "partial: report what those sources do say and note the limit. Do not "
     "discard usable sources — a partial grounded answer is more useful than a "
     "refusal.\n"
-    "4. If the sources do NOT substantively answer the question, do not compose "
+    "8. If the sources do NOT substantively answer the question, do not compose "
     "an answer, do not describe what you searched for, and do not explain what "
     "you could not find. Reply with exactly: NO_SUBSTANTIVE_ANSWER\n"
-    "5. You are a reference tool, not a clinician: report what the literature "
+    "9. You are a reference tool, not a clinician: report what the literature "
     "says; do not add practice recommendations of your own.\n"
-    "6. After the answer, on a new line, write [[FOLLOWUPS]] followed by two "
+    "10. After the answer, on a new line, write [[FOLLOWUPS]] followed by two "
     "short follow-up questions separated by ' | '."
 )
+
+
+def tier2_system(region: str) -> str:
+    """Tier 2 system prompt for the pool actually being searched."""
+    return ("You are Pramana, a literature reference tool for Indian "
+            "healthcare professionals. Answer the clinical question using ONLY "
+            "the web search results. "
+            f"{_T2_POOL['INTL' if region == 'INTL' else 'IN']}\n\n{_T2_RULES}")
 
 # The router's ONLY refusal signal. Returned by a dedicated structured call
 # because Anthropic rejects structured output combined with the Citations
@@ -343,25 +376,36 @@ TIER2_SYSTEM = (
 # so generation keeps citations and the boolean comes from this verdict step.
 VERDICT_SYSTEM = (
     "You audit a draft answer against the sources it cites. Return JSON only.\n"
+    "Each cited source is tagged [IN] (Indian) or [INTL] (international).\n"
     "answered: true only if the answer states substantive findings drawn from "
     "the cited sources. It is FALSE if the text instead reports that nothing "
     "was found, describes what was searched for, says the sources do not cover "
     "the question, is empty, or only points elsewhere for the real answer.\n"
     "grounded: true only if the cited evidence supports the answer's factual "
     "claims.\n"
-    'Reply exactly: {"answered": <bool>, "grounded": <bool>}'
+    "provenance_ok: false if any claim about drug dosing or dose adjustment, "
+    "drug availability, formulary or NLEM status, or an Indian national "
+    "programme protocol (TB, HIV, vector-borne, immunisation) rests on a "
+    "source tagged [INTL]. Also false if the answer presents international "
+    "guidance as though it were Indian guidance. True otherwise.\n"
+    'Reply exactly: {"answered": <bool>, "grounded": <bool>, '
+    '"provenance_ok": <bool>}'
 )
 
 TIER3_SYSTEM = (
-    "You are Pramana's unverified fallback. The indexed Indian literature did "
-    "not cover this question, so you are answering from general knowledge. "
-    "Rules:\n"
+    "You are Pramana's unverified fallback. The vetted literature pool — "
+    "Indian sources and international guideline sources — did not cover this "
+    "question, so you are answering from general knowledge. Rules:\n"
     "1. Begin the substance of the answer with the word 'Generally' or "
     "similar hedging; keep it to 2-4 sentences.\n"
     "2. State explicitly that this may not match Indian guidelines, drug "
     "availability, or approved indications.\n"
-    "3. Never invent citations or reference specific Indian guidelines.\n"
-    "4. After the answer, on a new line, write [[FOLLOWUPS]] followed by two "
+    "3. Never invent citations or reference specific Indian guidelines, "
+    "international guidelines, or named studies.\n"
+    "4. Do not give specific drug doses, dose adjustments, or formulary "
+    "status. If the question asks for these, say that verified guidance was "
+    "not found and that a primary source should be consulted.\n"
+    "5. After the answer, on a new line, write [[FOLLOWUPS]] followed by two "
     "short follow-up questions separated by ' | '."
 )
 
@@ -551,16 +595,20 @@ def _verdict(question: str, answer: str, citations: list[dict]) -> dict:
     an unverifiable answer is never served behind a grounded badge.
     """
     if not citations:
-        return {"answered": False, "grounded": False, "ok": True}
-    evidence = "\n".join(f"- {c['cited_text'][:400]} ({c['domain']})"
-                         for c in citations[:8])
+        return {"answered": False, "grounded": False,
+                "provenance_ok": False, "ok": True}
+    evidence = "\n".join(
+        f"[{'INTL' if c.get('region') == 'INTL' else 'IN'}] {c['domain']} — "
+        f"{c['cited_text'][:400]}" for c in citations[:8])
     prompt = (f"Question: {question}\n\nDraft answer: {answer}\n\n"
               f"Cited sources:\n{evidence}")
     judge_model = model_for("judge")
     schema = {"type": "object",
               "properties": {"answered": {"type": "boolean"},
-                             "grounded": {"type": "boolean"}},
-              "required": ["answered", "grounded"], "additionalProperties": False}
+                             "grounded": {"type": "boolean"},
+                             "provenance_ok": {"type": "boolean"}},
+              "required": ["answered", "grounded", "provenance_ok"],
+              "additionalProperties": False}
     for _ in range(2):                     # one retry; transient failures happen
         try:
             jc = _client(judge_model)
@@ -587,11 +635,16 @@ def _verdict(question: str, answer: str, citations: list[dict]) -> dict:
             grounded = bool(data.get("grounded"))
             if cfg("groundedness.judge", "true") != "true":
                 grounded = True            # judge disabled by admin switch
+            # Absent key means the judge did not assert a violation. Defaulting
+            # to False here would refuse every Indian-pass answer.
             return {"answered": bool(data.get("answered")),
-                    "grounded": grounded, "ok": True}
+                    "grounded": grounded,
+                    "provenance_ok": bool(data.get("provenance_ok", True)),
+                    "ok": True}
         except Exception:
             continue
-    return {"answered": False, "grounded": False, "ok": False}
+    return {"answered": False, "grounded": False,
+            "provenance_ok": False, "ok": False}
 
 
 def _grounded_answer(model: str, system: str, msgs: list[dict],
@@ -701,7 +754,7 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                                          f"sources via {PROVIDERS[prov]['label']}"})
             try:
                 plain, citations, used_model, refused = _grounded_answer(
-                    model, TIER2_SYSTEM, msgs, pool, effort,
+                    model, tier2_system(region), msgs, pool, effort,
                     int(cfg("websearch.max_uses", "3")))
             except HTTPException as e:
                 yield sse("error", {"detail": str(e.detail)})
@@ -726,6 +779,10 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                 yield sse("stage", {"label": f"Retrieved {len(citations)} cited "
                                              f"{label} passages"})
                 yield sse("stage", {"label": "Checking the answer against its sources"})
+                # Tag before the verdict: the judge decides provenance from the
+                # [IN]/[INTL] markers, so untagged citations would read as Indian.
+                for c in citations:
+                    c["region"] = region
                 v = _verdict(query, plain, citations)
                 if not v["ok"]:
                     fell(2, f"verdict_unavailable:{region}")
@@ -735,10 +792,13 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                     fell(2, f"not_answered:{region}")
                 elif not v["grounded"]:
                     fell(2, f"not_grounded:{region}")
+                elif not v.get("provenance_ok", True):
+                    # Dosing/NLEM/programme claim resting on foreign guidance,
+                    # or international guidance dressed up as Indian. Same
+                    # severity as ungrounded: refuse rather than render.
+                    fell(2, f"provenance_violation:{region}")
                 else:
                     answered_t2 = True
-                    for c in citations:
-                        c["region"] = region
                     result.update({
                         "tier": 2, "status": "answered", "answer_text": plain,
                         "segments": [{"text": plain,
