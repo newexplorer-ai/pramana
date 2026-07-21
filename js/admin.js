@@ -41,25 +41,41 @@
       { domain:'cdsco.gov.in',         note:'Central Drugs Standard Control Organisation — drug approvals & safety.',        by:'Dr. A. Rao',   date:'02 Jul 2026', on:false },
     ],
     config:[
-      { key:'model.generation',       value:'claude-sonnet-4.5', def:'claude-sonnet-4', desc:'Model ID for Tier 1/2/3 generation.',     who:'A. Rao', when:'18 Jul 2026', critical:true  },
-      { key:'model.judge',            value:'claude-haiku-4',    def:'claude-haiku-4',  desc:'Model for the groundedness check.',        who:'A. Rao', when:'18 Jul 2026', critical:false },
-      { key:'retrieval.threshold',    value:'0.78',              def:'0.75',            desc:'Tier 1 vs Tier 2 routing (cosine).',       who:'A. Rao', when:'19 Jul 2026', critical:false },
-      { key:'retrieval.min_chunks',   value:'2',                 def:'2',               desc:'Stray-match guard.',                       who:'system', when:'default',     critical:false },
-      { key:'retrieval.top_k',        value:'8',                 def:'8',               desc:'Chunks retrieved per query.',              who:'system', when:'default',     critical:false },
-      { key:'websearch.max_uses',     value:'3',                 def:'5',               desc:'Tier 2 search cap per query.',             who:'A. Rao', when:'15 Jul 2026', critical:false },
-      { key:'cost.per_query_ceiling', value:'$0.12',             def:'$0.15',           desc:'Budget guardrail per query.',              who:'A. Rao', when:'15 Jul 2026', critical:false },
-      { key:'cost.daily_user_cap',    value:'40',                def:'50',              desc:'Per-doctor query cap per day.',            who:'A. Rao', when:'15 Jul 2026', critical:false },
+      { key:'provider.active',        value:'anthropic',         def:'anthropic',       desc:'Which model provider answers questions.',  who:'system', when:'20 Jul 2026', critical:true  },
+      { key:'generation.effort',      value:'medium',            def:'medium',          desc:'Effort level for generation.',             who:'system', when:'20 Jul 2026', critical:false },
+      { key:'websearch.max_uses',     value:'3',                 def:'3',               desc:'Web-search cap per query.',                who:'system', when:'20 Jul 2026', critical:false },
+      { key:'groundedness.judge',     value:'true',              def:'true',            desc:'Run the judge model on grounded answers.', who:'system', when:'20 Jul 2026', critical:false },
+      { key:'answers.allow_tier3',    value:'true',              def:'true',            desc:'Serve unverified Tier 3 answers.',         who:'system', when:'20 Jul 2026', critical:false },
+      { key:'cost.daily_user_cap',    value:'40',                def:'40',              desc:'Per-clinician query cap per day.',         who:'system', when:'20 Jul 2026', critical:false },
       { key:'context.max_turns',      value:'6',                 def:'6',               desc:'Conversation depth resent per request.',   who:'system', when:'default',     critical:false },
     ],
     // Credential STATUS (never key material). Populated live in LIVE mode;
     // the static demo shows a representative "not configured" state.
-    credentials:{ providers:[{
-      provider:'Anthropic',
-      use:'Grounded web answers (Tier 2) + groundedness judge',
-      env_var:'ANTHROPIC_API_KEY', configured:false, status:'not_configured',
-      detail:'No API key is set. Answering questions will fail.',
-      models:{ generation:'claude-opus-4-8', judge:'claude-haiku-4-5' },
-    }], rotate_hint:"flyctl secrets set --app pramana ANTHROPIC_API_KEY='sk-ant-...'" },
+    credentials:{ providers:[
+      { provider:'Anthropic (Claude)', key:'anthropic', env_var:'ANTHROPIC_API_KEY',
+        use:'answering every question', in_use:true,
+        grounding:'enforced', configured:false, status:'not_configured',
+        detail:'No API key is set. Answering questions will fail.',
+        probe_model:'claude-opus-4-8' },
+      { provider:'OpenAI (ChatGPT)', key:'openai', env_var:'OPENAI_API_KEY',
+        use:'standby', in_use:false,
+        grounding:'annotations', configured:false, status:'not_configured',
+        detail:'No API key set (OPENAI_API_KEY). Needed only if you switch to OpenAI.',
+        probe_model:'gpt-5.2' },
+    ], rotate_hint:"flyctl secrets set --app pramana ANTHROPIC_API_KEY='sk-ant-...'",
+       rotate_hint_openai:"flyctl secrets set --app pramana OPENAI_API_KEY='sk-proj-...'" },
+    // Provider switch (LIVE mode replaces this from /api/admin/providers).
+    providers:{
+      active:'anthropic',
+      providers:[
+        { key:'anthropic', label:'Anthropic (Claude)', env_var:'ANTHROPIC_API_KEY',
+          ready:false, active:true, grounding:'enforced',
+          models:{ generation:'claude-opus-4-8', judge:'claude-haiku-4-5' } },
+        { key:'openai', label:'OpenAI (ChatGPT)', env_var:'OPENAI_API_KEY',
+          ready:false, active:false, grounding:'annotations',
+          models:{ generation:'gpt-5.2', judge:'gpt-5.2-mini' } },
+      ],
+    },
     audit:[
       { actor:'A. Rao',   action:'update',  change:'model.generation: sonnet-4 → sonnet-4.5',   when:'18 Jul, 14:22' },
       { actor:'A. Rao',   action:'update',  change:'retrieval.threshold: 0.75 → 0.78',          when:'19 Jul, 09:10' },
@@ -91,11 +107,13 @@
     `${d.getDate()} ${d.toLocaleString('en',{month:'short'})}, ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
 
   async function loadLive(){
-    const [domains, config, auditRows] = await Promise.all([
+    const [domains, config, auditRows, models] = await Promise.all([
       PRAMANA_API.get('/api/admin/domains'),
       PRAMANA_API.get('/api/admin/config'),
       PRAMANA_API.get('/api/admin/audit'),
+      PRAMANA_API.get('/api/admin/providers').catch(() => null),
     ]);
+    if(models) state.providers = models;
     state.domains = domains.map(d => ({ domain:d.domain, note:d.trust_note,
       by:d.added_by||'—', date:fmtD(d.created_at), on:!!d.enabled }));
     state.config = config.map(c => ({ key:c.key, value:c.value, def:c.default_value,
@@ -437,6 +455,50 @@
     });
   }
 
+  /* ---------- provider switch (one provider powers everything) ---------- */
+  function renderProviders(){
+    const cat = state.providers;
+    if(!cat) return '';
+    const cards = cat.providers.map(p => `
+      <label class="prov-card ${p.active?'on':''} ${p.ready?'':'locked'}">
+        <input type="radio" name="activeProvider" value="${esc(p.key)}"
+          ${p.active?'checked':''} ${live()&&isAdmin()&&p.ready?'':'disabled'}>
+        <span class="prov-radio"></span>
+        <span class="prov-body">
+          <span class="prov-title">${esc(p.label)}
+            ${p.active?'<span class="prov-live">active</span>':''}
+            ${p.ready?'':'<span class="prov-warn">no API key</span>'}</span>
+          <span class="prov-sub">${p.grounding==='enforced'
+            ? 'Citations enforced by the API — the strongest grounding guarantee.'
+            : 'Citations returned as URL annotations — grounding is weaker.'}</span>
+          <span class="prov-models">${esc(p.models.generation)} · judge ${esc(p.models.judge)}</span>
+          ${p.ready?'':`<span class="prov-hint">Set <code>${esc(p.env_var)}</code> to enable.</span>`}
+        </span>
+      </label>`).join('');
+    return `
+      <div class="switch-panel prov-panel">
+        <div class="block-title">${svg('config',{w:13,sw:1.8})}Model provider</div>
+        <p class="role-intro">One provider answers every question. A provider can only be
+          selected once its API key is set.</p>
+        <div class="prov-grid">${cards}</div>
+      </div>`;
+  }
+
+  function wireProviders(){
+    viewEl.querySelectorAll('input[name="activeProvider"]').forEach(el =>
+      el.addEventListener('change', () => {
+        const key = el.value;
+        const p = state.providers.providers.find(x => x.key === key);
+        if(!confirm(`Switch to ${p.label}?\n\nEvery question will be answered by this provider from now on.`)){
+          renderConfig(); return;
+        }
+        mutate(async () => {
+          await PRAMANA_API.post('/api/admin/providers/' + encodeURIComponent(key));
+          state.providers = await PRAMANA_API.get('/api/admin/providers');
+        });
+      }));
+  }
+
   /* ---------- safety switches (boolean config, surfaced prominently) ---------- */
   const SWITCHES = [
     { key:'answers.allow_tier3', label:'Serve unverified answers (Tier 3)',
@@ -500,6 +562,7 @@
         <p>Changes apply <b>globally and immediately</b> — there is no staged rollout in v1. Editing <code>model.generation</code> requires confirmation.</p>
       </div>
 
+      ${renderProviders()}
       ${renderSwitches()}
 
       <div class="tbl" style="margin-top:16px;">
@@ -516,6 +579,7 @@
       ${live()&&!isAdmin()?'<div class="rail-note" style="margin-top:10px;">Config is read-only for editors.</div>':''}`;
 
     wireSwitches();
+    wireProviders();
 
     // LIVE + admin: click-to-edit; critical keys require an explicit confirm.
     if(live() && isAdmin()){
@@ -567,12 +631,13 @@
           return `
           <div class="key-card cred-card">
             <div class="key-info">
-              <div class="key-provider">${esc(p.provider)} <span class="cred-dot ${tone}"></span><span class="cred-status ${tone}">${label}</span></div>
-              <div class="key-use">${esc(p.use)}</div>
+              <div class="key-provider">${esc(p.provider)} <span class="cred-dot ${tone}"></span><span class="cred-status ${tone}">${label}</span>
+                ${p.in_use===false?'<span class="prov-warn muted">unused</span>':''}</div>
+              <div class="key-use">Used for: ${esc(p.use)}</div>
               <div class="cred-detail">${esc(p.detail||'')}</div>
-              ${p.models ? `<div class="cred-models">
-                 <span>generation <b>${esc(p.models.generation)}</b></span>
-                 <span>judge <b>${esc(p.models.judge)}</b></span>
+              ${p.grounding ? `<div class="cred-models">
+                 <span>citations <b>${p.grounding==='enforced'?'API-enforced':'URL annotations'}</b></span>
+                 ${p.probe_model?`<span>probed <b>${esc(p.probe_model)}</b></span>`:''}
                </div>`:''}
             </div>
             <div class="key-rotated">Set via<b>${esc(p.env_var||'')}</b></div>
@@ -580,9 +645,10 @@
       </div>
 
       <div class="cred-rotate">
-        <div class="block-title">${svg('rotate',{w:13,sw:2})}Rotate or set the key</div>
-        <p>Run this in your terminal — the platform restarts the app with the new value. Nothing is entered in this UI by design.</p>
+        <div class="block-title">${svg('rotate',{w:13,sw:2})}Set or rotate a key</div>
+        <p>Run in your terminal — the platform restarts the app with the new value. Key material is never entered in this UI by design.</p>
         <code class="cred-cmd">${esc(c.rotate_hint||'')}</code>
+        ${c.rotate_hint_openai?`<code class="cred-cmd" style="margin-top:8px;">${esc(c.rotate_hint_openai)}</code>`:''}
       </div>
       ${live()?`<button class="mini-btn ok" id="recheckBtn" style="margin-top:14px;">Re-check now</button>`:''}`;
 

@@ -214,6 +214,41 @@ body.adminpage{background:#fff;background-image:none;overflow:hidden;}
   margin-left:-17px;margin-right:-17px;padding-left:17px;padding-right:17px;border-radius:6px;}
 .switch-row .toggle{flex:none;margin-top:2px;}
 
+/* ---------------- provider switch ---------------- */
+.role-intro{margin:8px 0 0;font-size:11.5px;line-height:1.55;color:var(--muted-2);}
+.prov-grid{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.prov-card{
+  display:flex;gap:11px;align-items:flex-start;cursor:pointer;
+  border:1.5px solid var(--line);border-radius:10px;padding:14px 15px;
+  background:var(--paper);transition:border-color .15s,background .15s;
+}
+.prov-card:hover{border-color:#d3cec3;}
+.prov-card.on{border-color:var(--t1);background:var(--t1-quote);}
+.prov-card.locked{opacity:.72;cursor:not-allowed;background:var(--paper-soft);}
+.prov-card input{position:absolute;opacity:0;pointer-events:none;}
+.prov-radio{
+  width:17px;height:17px;border-radius:999px;border:1.5px solid #cdc7bb;flex:none;margin-top:2px;
+  background:var(--paper);transition:border-color .15s,box-shadow .15s;
+}
+.prov-card.on .prov-radio{border-color:var(--t1);border-width:5px;}
+.prov-body{display:flex;flex-direction:column;gap:4px;min-width:0;}
+.prov-title{display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:13px;font-weight:600;color:var(--ink);}
+.prov-live{
+  font-size:8.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--t1);background:var(--t1-bg);border:1px solid var(--t1-br);
+  padding:1px 6px;border-radius:3px;
+}
+.prov-warn{
+  font-size:8.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  color:#b4543e;background:#fdf2ef;border:1px solid #f0d9d1;padding:1px 6px;border-radius:3px;
+}
+.prov-warn.muted{color:var(--faint-2);background:var(--paper-soft);border-color:var(--line);}
+.prov-sub{font-size:11.5px;line-height:1.5;color:var(--muted-2);}
+.prov-models{font-family:var(--mono);font-size:10px;color:var(--faint);}
+.prov-hint{margin-top:3px;font-size:10.5px;color:#8a4a34;}
+.prov-hint code{font-family:var(--mono);font-size:10px;}
+@media (max-width:820px){ .prov-grid{grid-template-columns:1fr;} }
+
 /* ---------------- audit chips ---------------- */
 .action-chip{font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:5px;border:1px solid;}
 .action-create{color:var(--t1);background:var(--t1-bg);border-color:var(--t1-br);}

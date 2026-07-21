@@ -37,6 +37,11 @@ try:
 except ImportError:  # surfaced as a 503 at ask-time
     anthropic = None
 
+try:
+    import openai
+except ImportError:
+    openai = None
+
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = os.environ.get("PRAMANA_DB", str(ROOT / "server" / "pramana.db"))
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
@@ -125,8 +130,9 @@ SEED_DOMAINS = [
 ]
 # key, value, default, description, critical
 SEED_CONFIG = [
-    ("model.generation", "claude-opus-4-8", "claude-opus-4-8", "Model ID for Tier 2/3 generation.", 1),
-    ("model.judge", "claude-haiku-4-5", "claude-haiku-4-5", "Model for the groundedness check.", 0),
+    # One provider powers everything. Switched from Admin → Models & config.
+    ("provider.active", "anthropic", "anthropic",
+     "Which model provider answers questions. Requires that provider's API key.", 1),
     ("generation.effort", "medium", "medium", "Effort level for generation (low|medium|high).", 0),
     ("websearch.max_uses", "3", "3", "Tier 2 search cap per query.", 0),
     ("groundedness.judge", "true", "true", "Run the judge model on Tier 2 answers.", 0),
@@ -160,9 +166,10 @@ def init_db() -> None:
                description=excluded.description,
                critical=excluded.critical""",
           (key, value, default, desc, critical, now()))
-    # Voyage/embeddings belonged to the cut Tier 1 corpus path — make sure no
-    # stale key rows survive from an earlier build.
-    q("DELETE FROM app_config WHERE key LIKE 'embedding%'")
+    # Retired keys: per-role model selection was replaced by a single
+    # provider switch; embeddings belonged to the cut Tier 1 corpus path.
+    q("""DELETE FROM app_config WHERE key LIKE 'embedding%'
+         OR key IN ('model.generation','model.tier3','model.judge')""")
     if not q("SELECT 1 FROM access_requests LIMIT 1"):
         q("INSERT INTO access_requests(name,email,reg,council,specialty,institution,status,created_at) "
           "VALUES(?,?,?,?,?,?, 'pending', ?)",
@@ -314,13 +321,114 @@ TIER3_SYSTEM = (
 )
 
 
-def _client():
+# ---------------------------------------------------------------- providers
+#
+# Two providers are supported (PRD D3). They are NOT equivalent for Tier 2:
+# Anthropic's web_search server tool enforces citations at the API level, which
+# is what the groundedness promise rests on. OpenAI's web search returns URL
+# annotations, which we map onto the same contract — good, but a different
+# guarantee. The admin UI flags this when an OpenAI model is chosen for Tier 2.
+
+PROVIDERS = {
+    "anthropic": {"label": "Anthropic (Claude)", "env": "ANTHROPIC_API_KEY",
+                  "grounded": "enforced",
+                  "models": {"generation": "claude-opus-4-8",
+                             "judge": "claude-haiku-4-5"}},
+    "openai":    {"label": "OpenAI (ChatGPT)", "env": "OPENAI_API_KEY",
+                  "grounded": "annotations",
+                  "models": {"generation": "gpt-5.2",
+                             "judge": "gpt-5.2-mini"}},
+}
+
+
+def active_provider() -> str:
+    """The one provider currently powering every answer."""
+    p = cfg("provider.active", "anthropic")
+    return p if p in PROVIDERS else "anthropic"
+
+
+def model_for(role: str) -> str:
+    """Model id for a role ('generation' | 'judge') on the active provider."""
+    return PROVIDERS[active_provider()]["models"][role]
+
+
+def provider_of(model_id: str) -> str:
+    return "openai" if str(model_id).lower().startswith(("gpt", "o1", "o3", "o4", "chatgpt")) \
+        else "anthropic"
+
+
+def provider_ready(name: str) -> bool:
+    if name == "anthropic":
+        return anthropic is not None and bool(
+            os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+    return openai is not None and bool(os.environ.get("OPENAI_API_KEY"))
+
+
+def _client(model_id: str):
+    """Return an SDK client for whichever provider owns this model id."""
+    name = provider_of(model_id)
+    if name == "openai":
+        if openai is None:
+            raise HTTPException(503, "openai_sdk_missing")
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise HTTPException(503, "openai_credentials: OPENAI_API_KEY is not set")
+        return openai.OpenAI()
     if anthropic is None:
         raise HTTPException(503, "anthropic_sdk_missing")
     try:
         return anthropic.Anthropic()
     except Exception as e:  # missing credentials
         raise HTTPException(503, f"anthropic_credentials: {e}")
+
+
+def _openai_grounded(client, model, system, messages, domains, max_uses):
+    """Tier 2 via OpenAI Responses API + web_search with domain filters.
+
+    Mapped onto the same (segments, citations, text) contract Anthropic
+    produces. Citations come from url_citation annotations.
+    """
+    convo = "\n\n".join(
+        f"{m['role'].upper()}: {m['content'] if isinstance(m['content'], str) else ''}"
+        for m in messages)
+    resp = client.responses.create(
+        model=model,
+        instructions=system,
+        input=convo,
+        tools=[{"type": "web_search",
+                "filters": {"allowed_domains": domains}}],
+        max_output_tokens=2048,
+    )
+    text, citations, seen = "", [], {}
+    for item in getattr(resp, "output", []) or []:
+        if getattr(item, "type", "") != "message":
+            continue
+        for block in getattr(item, "content", []) or []:
+            if getattr(block, "type", "") != "output_text":
+                continue
+            text += block.text
+            for a in (getattr(block, "annotations", None) or []):
+                if getattr(a, "type", "") != "url_citation":
+                    continue
+                url = getattr(a, "url", "") or ""
+                if url in seen:
+                    continue
+                seen[url] = True
+                citations.append({
+                    "cited_text": (getattr(a, "title", "") or "")[:400],
+                    "url": url,
+                    "title": getattr(a, "title", "") or "",
+                    "domain": re.sub(r"^https?://(www\.)?([^/]+).*$", r"\2", url),
+                })
+    return text.strip(), citations
+
+
+def _openai_plain(client, model, system, messages) -> str:
+    convo = "\n\n".join(
+        f"{m['role'].upper()}: {m['content'] if isinstance(m['content'], str) else ''}"
+        for m in messages)
+    resp = client.responses.create(model=model, instructions=system,
+                                   input=convo, max_output_tokens=1024)
+    return (getattr(resp, "output_text", "") or "").strip()
 
 
 def _parse_followups(text: str) -> tuple[str, list[str]]:
@@ -368,27 +476,38 @@ def _extract_answer(resp) -> tuple[list[dict], list[dict], str]:
     return segments, citations, "\n".join(plain).strip()
 
 
-def _judge_grounded(client, question: str, answer: str, citations: list[dict]) -> bool:
-    """Cheap judge (PRD §7.4): do the cited passages support the answer?"""
+def _judge_grounded(question: str, answer: str, citations: list[dict]) -> bool:
+    """Cheap judge (PRD §7.4): do the cited passages support the answer?
+
+    Provider-agnostic — the judge is a plain structured yes/no, so either
+    provider works here regardless of what served the answer.
+    """
     if cfg("groundedness.judge") != "true" or not citations:
         return bool(citations)
     evidence = "\n".join(f"- {c['cited_text'][:400]} ({c['domain']})" for c in citations[:8])
+    prompt = (f"Question: {question}\n\nAnswer: {answer}\n\nCited passages:\n{evidence}\n\n"
+              "Does the cited evidence support every factual claim in the answer? "
+              'Reply as JSON: {"grounded": true|false}')
+    judge_model = model_for("judge")
     try:
-        resp = client.messages.create(
-            model=cfg("model.judge", "claude-haiku-4-5"),
-            max_tokens=256,
-            output_config={"format": {"type": "json_schema", "schema": {
-                "type": "object",
-                "properties": {"grounded": {"type": "boolean"}},
-                "required": ["grounded"], "additionalProperties": False}}},
-            messages=[{"role": "user", "content":
-                       f"Question: {question}\n\nAnswer: {answer}\n\nCited passages:\n{evidence}\n\n"
-                       "Does the cited evidence support every factual claim in the answer?"}],
-        )
-        text = next(b.text for b in resp.content if b.type == "text")
-        return bool(json.loads(text).get("grounded"))
+        jc = _client(judge_model)
+        if provider_of(judge_model) == "openai":
+            r = jc.responses.create(model=judge_model, input=prompt, max_output_tokens=200)
+            text = getattr(r, "output_text", "") or ""
+        else:
+            resp = jc.messages.create(
+                model=judge_model, max_tokens=256,
+                output_config={"format": {"type": "json_schema", "schema": {
+                    "type": "object",
+                    "properties": {"grounded": {"type": "boolean"}},
+                    "required": ["grounded"], "additionalProperties": False}}},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = next(b.text for b in resp.content if b.type == "text")
+        m = re.search(r'\{.*\}', text, re.S)
+        return bool(json.loads(m.group(0) if m else text).get("grounded"))
     except Exception:
-        # Judge failure must not take the product down; deterministic
+        # Judge failure must not take the product down; the deterministic
         # citation-presence check already passed.
         return True
 
@@ -435,55 +554,67 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
             "retrieved_at": today(), "citations": [], "followups": [],
         }
 
-        try:
-            client = _client()
-        except HTTPException as e:
-            yield sse("error", {"detail": e.detail})
-            return
-
-        model = cfg("model.generation", "claude-opus-4-8")
+        prov = active_provider()
+        model = model_for("generation")
         effort = cfg("generation.effort", "medium")
+        msgs = history + [{"role": "user", "content": query}]
 
         # ---------- Tier 2: allowlisted web search ----------
-        tier2_resp = None
+        answered_t2 = False
         if domains:
-            yield sse("stage", {"label": f"Searching {len(domains)} allowlisted Indian domains"})
+            yield sse("stage", {"label": f"Searching {len(domains)} allowlisted Indian "
+                                         f"domains via {PROVIDERS[prov]['label']}"})
             try:
-                tier2_resp = _run_with_pause_turn(
-                    client,
-                    model=model,
-                    max_tokens=2048,
-                    thinking={"type": "adaptive"},
-                    output_config={"effort": effort},
-                    system=[{"type": "text", "text": TIER2_SYSTEM,
-                             "cache_control": {"type": "ephemeral"}}],
-                    tools=[{"type": "web_search_20260209", "name": "web_search",
-                            "max_uses": int(cfg("websearch.max_uses", "3")),
-                            "allowed_domains": domains}],
-                    messages=history + [{"role": "user", "content": query}],
-                )
+                client = _client(model)
+                if prov == "openai":
+                    plain, citations = _openai_grounded(
+                        client, model, TIER2_SYSTEM, msgs, domains,
+                        int(cfg("websearch.max_uses", "3")))
+                    plain, followups = _parse_followups(plain)
+                    segments = [{"text": plain,
+                                 "citations": list(range(len(citations)))}] if plain else []
+                    used_model = model
+                    refused = False
+                else:
+                    tier2_resp = _run_with_pause_turn(
+                        client,
+                        model=model,
+                        max_tokens=2048,
+                        thinking={"type": "adaptive"},
+                        output_config={"effort": effort},
+                        system=[{"type": "text", "text": TIER2_SYSTEM,
+                                 "cache_control": {"type": "ephemeral"}}],
+                        tools=[{"type": "web_search_20260209", "name": "web_search",
+                                "max_uses": int(cfg("websearch.max_uses", "3")),
+                                "allowed_domains": domains}],
+                        messages=msgs,
+                    )
+                    refused = tier2_resp.stop_reason == "refusal"
+                    segments, citations, plain = _extract_answer(tier2_resp)
+                    plain, followups = _parse_followups(plain)
+                    if segments:
+                        segments[-1]["text"], _ = _parse_followups(segments[-1]["text"])
+                    used_model = tier2_resp.model
+            except HTTPException as e:
+                yield sse("error", {"detail": str(e.detail)})
+                return
             except Exception as e:
                 yield sse("stage", {"label": "Web search unavailable", "state": "warn"})
                 yield sse("error", {"detail": f"generation_failed: {e}"})
                 return
 
-        answered_t2 = False
-        if tier2_resp is not None and tier2_resp.stop_reason != "refusal":
-            segments, citations, plain = _extract_answer(tier2_resp)
-            plain, followups = _parse_followups(plain)
-            if segments:
-                segments[-1]["text"], _ = _parse_followups(segments[-1]["text"])
-            not_found = "[[NOT_FOUND]]" in plain or not citations
-            if not not_found:
-                yield sse("stage", {"label": f"Retrieved {len(citations)} cited passages"})
-                yield sse("stage", {"label": "Checking groundedness"})
-                if _judge_grounded(client, query, plain, citations):
-                    answered_t2 = True
-                    result.update({
-                        "tier": 2, "status": "answered", "answer_text": plain,
-                        "segments": segments, "citations": citations,
-                        "followups": followups, "model_used": tier2_resp.model,
-                    })
+            if not refused:
+                not_found = "[[NOT_FOUND]]" in plain or not citations
+                if not not_found:
+                    yield sse("stage", {"label": f"Retrieved {len(citations)} cited passages"})
+                    yield sse("stage", {"label": "Checking groundedness"})
+                    if _judge_grounded(query, plain, citations):
+                        answered_t2 = True
+                        result.update({
+                            "tier": 2, "status": "answered", "answer_text": plain,
+                            "segments": segments, "citations": citations,
+                            "followups": followups, "model_used": used_model,
+                        })
 
         # ---------- Tier 3 / withheld ----------
         if not answered_t2:
@@ -506,28 +637,38 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                     "segments": [], "model_used": None,
                 })
             else:
-                yield sse("stage", {"label": "No grounded source — falling back to general model"})
+                t3_model, t3_prov = model, prov
+                yield sse("stage", {"label": "No grounded source — falling back to "
+                                             f"{PROVIDERS[t3_prov]['label']} general model"})
                 try:
-                    t3 = client.messages.create(
-                        model=model, max_tokens=1024,
-                        thinking={"type": "adaptive"},
-                        output_config={"effort": effort},
-                        system=[{"type": "text", "text": TIER3_SYSTEM,
-                                 "cache_control": {"type": "ephemeral"}}],
-                        messages=history + [{"role": "user", "content": query}],
-                    )
+                    t3_client = _client(t3_model)
+                    if t3_prov == "openai":
+                        plain = _openai_plain(t3_client, t3_model, TIER3_SYSTEM, msgs)
+                        used = t3_model
+                    else:
+                        t3 = t3_client.messages.create(
+                            model=t3_model, max_tokens=1024,
+                            thinking={"type": "adaptive"},
+                            output_config={"effort": effort},
+                            system=[{"type": "text", "text": TIER3_SYSTEM,
+                                     "cache_control": {"type": "ephemeral"}}],
+                            messages=msgs,
+                        )
+                        used = t3.model
+                        plain = ("The model declined to answer this question."
+                                 if t3.stop_reason == "refusal"
+                                 else "\n".join(b.text for b in t3.content if b.type == "text"))
+                    plain, followups = _parse_followups(plain)
+                except HTTPException as e:
+                    yield sse("error", {"detail": str(e.detail)})
+                    return
                 except Exception as e:
                     yield sse("error", {"detail": f"generation_failed: {e}"})
                     return
-                if t3.stop_reason == "refusal":
-                    plain, followups = "The model declined to answer this question.", []
-                else:
-                    plain = "\n".join(b.text for b in t3.content if b.type == "text")
-                    plain, followups = _parse_followups(plain)
                 result.update({
                     "tier": 3, "status": "unverified", "answer_text": plain,
                     "segments": [{"text": plain, "citations": []}],
-                    "followups": followups, "model_used": t3.model,
+                    "followups": followups, "model_used": used,
                 })
 
         result["latency_ms"] = int((time.time() - started) * 1000)
@@ -741,6 +882,10 @@ def config_update(key: str, body: dict, user: dict = Depends(require_role("admin
     audit(user["name"], "update", f"{key}: {rows[0]['value']} → {value}")
     q("UPDATE app_config SET value=?, updated_by=?, updated_at=? WHERE key=?",
       (value, user["name"], now(), key))
+    # Model changes alter which providers are in use and what to probe, so the
+    # cached credential status is immediately stale.
+    if key.startswith(("model.", "provider.")):
+        _probe_cache.update(at=0.0, data=None)
     return {"ok": True}
 
 
@@ -754,52 +899,94 @@ _probe_cache: dict = {"at": 0.0, "data": None}
 _PROBE_TTL = 60  # seconds
 
 
-def _probe_anthropic() -> dict:
-    """Cheap liveness check: resolve the configured model. No tokens billed."""
-    model = cfg("model.generation", "claude-opus-4-8")
-    judge = cfg("model.judge", "claude-haiku-4-5")
-    key_present = bool(os.environ.get("ANTHROPIC_API_KEY")
-                       or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+def _probe_provider(name: str) -> dict:
+    """Cheap liveness check: resolve a model this provider owns. No tokens."""
+    meta = PROVIDERS[name]
+    is_active = active_provider() == name
+    probe_model = meta["models"]["generation"]
     out = {
-        "provider": "Anthropic",
-        "use": "Grounded web answers (Tier 2) + groundedness judge",
-        "env_var": "ANTHROPIC_API_KEY",
-        "configured": key_present,
+        "provider": meta["label"], "key": name, "env_var": meta["env"],
+        "use": "answering every question" if is_active else "standby",
+        "in_use": is_active,
+        "grounding": meta["grounded"],
+        "configured": provider_ready(name),
         "status": "not_configured",
-        "detail": "No API key is set. Answering questions will fail.",
-        "models": {"generation": model, "judge": judge},
+        "detail": f"No API key is set ({meta['env']}).",
+        "probe_model": probe_model,
         "checked_at": now(),
     }
-    if anthropic is None:
-        out["detail"] = "The anthropic SDK is not installed in this image."
+    sdk = anthropic if name == "anthropic" else openai
+    if sdk is None:
+        out["detail"] = f"The {name} SDK is not installed in this image."
         return out
-    if not key_present:
+    if not out["configured"]:
+        if not is_active:
+            out["detail"] = (f"No API key set ({meta['env']}). "
+                             f"Needed only if you switch to {meta['label']}.")
         return out
     try:
-        client = anthropic.Anthropic()
-        got = client.models.retrieve(model)
-        out.update(status="connected",
-                   detail=f"Reached {getattr(got, 'display_name', model)}.")
+        if name == "anthropic":
+            got = anthropic.Anthropic().models.retrieve(probe_model)
+            label = getattr(got, "display_name", probe_model)
+        else:
+            got = openai.OpenAI().models.retrieve(probe_model)
+            label = getattr(got, "id", probe_model)
+        out.update(status="connected", detail=f"Reached {label}.")
     except Exception as e:
-        name = type(e).__name__
-        out.update(
-            status="invalid" if "Auth" in name or "Permission" in name else "error",
-            detail=f"{name}: {str(e)[:160]}")
+        n = type(e).__name__
+        out.update(status="invalid" if "Auth" in n or "Permission" in n else "error",
+                   detail=f"{n}: {str(e)[:160]}")
     return out
 
 
 @app.get("/api/admin/credentials")
 def credentials(user: dict = Depends(require_role("admin"))):
     if time.time() - _probe_cache["at"] > _PROBE_TTL or _probe_cache["data"] is None:
-        _probe_cache.update(at=time.time(), data=_probe_anthropic())
-    return {"providers": [_probe_cache["data"]],
-            "rotate_hint": "flyctl secrets set --app pramana ANTHROPIC_API_KEY='sk-ant-...'"}
+        _probe_cache.update(at=time.time(),
+                            data=[_probe_provider(p) for p in PROVIDERS])
+    return {"providers": _probe_cache["data"],
+            "rotate_hint": "flyctl secrets set --app pramana ANTHROPIC_API_KEY='sk-ant-...'",
+            "rotate_hint_openai": "flyctl secrets set --app pramana OPENAI_API_KEY='sk-proj-...'"}
 
 
 @app.post("/api/admin/credentials/recheck")
 def credentials_recheck(user: dict = Depends(require_role("admin"))):
-    _probe_cache.update(at=time.time(), data=_probe_anthropic())
-    return {"providers": [_probe_cache["data"]]}
+    _probe_cache.update(at=time.time(),
+                        data=[_probe_provider(p) for p in PROVIDERS])
+    return {"providers": _probe_cache["data"]}
+
+
+@app.get("/api/admin/providers")
+def providers_list(user: dict = Depends(require_role("editor"))):
+    """The provider switch: which providers exist, which is on, which are usable."""
+    act = active_provider()
+    return {
+        "active": act,
+        "providers": [
+            {"key": k, "label": v["label"], "env_var": v["env"],
+             "ready": provider_ready(k), "grounding": v["grounded"],
+             "active": k == act,
+             "models": v["models"]}
+            for k, v in PROVIDERS.items()
+        ],
+    }
+
+
+@app.post("/api/admin/providers/{name}")
+def providers_activate(name: str, user: dict = Depends(require_role("admin"))):
+    if name not in PROVIDERS:
+        raise HTTPException(404, "unknown_provider")
+    if not provider_ready(name):
+        # Switching to a provider with no key would break every answer.
+        raise HTTPException(409, f"no_api_key: set {PROVIDERS[name]['env']} first")
+    before = active_provider()
+    if before != name:
+        q("UPDATE app_config SET value=?, updated_by=?, updated_at=? WHERE key='provider.active'",
+          (name, user["name"], now()))
+        audit(user["name"], "update",
+              f"provider: {PROVIDERS[before]['label']} → {PROVIDERS[name]['label']}")
+        _probe_cache.update(at=0.0, data=None)
+    return {"ok": True, "active": name}
 
 
 @app.get("/api/admin/audit")
