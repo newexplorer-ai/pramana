@@ -422,15 +422,34 @@ PROVIDERS = {
     "anthropic": {"label": "Anthropic (Claude)", "env": "ANTHROPIC_API_KEY",
                   "grounded": "enforced",
                   "models": {"generation": "claude-opus-4-8",
-                             "judge": "claude-haiku-4-5"}},
+                             "judge": "claude-haiku-4-5"},
+                  # Not probed against a live key — no Anthropic credential is
+                  # configured. Batching at 100 is safe either way.
+                  "max_domains": 100},
     # Model ids verified against the provider's own models.list(), not
     # assumed: 'gpt-5.2-mini' does not exist and silently failed every
     # verdict call, downgrading good grounded answers to unverified.
     "openai":    {"label": "OpenAI (ChatGPT)", "env": "OPENAI_API_KEY",
                   "grounded": "annotations",
                   "models": {"generation": "gpt-5.2",
-                             "judge": "gpt-5-mini"}},
+                             "judge": "gpt-5-mini"},
+                  # Hard API limit, probed against the live endpoint: an
+                  # allowed_domains array longer than this is a 400, so the
+                  # search never runs and every query silently falls to Tier 3.
+                  "max_domains": 100},
 }
+
+
+def _domain_batches(domains: list[str], cap: int) -> list[list[str]]:
+    """Split a pool into search-sized batches, preserving order.
+
+    Seed order is trust order (apex bodies, then journals, then societies,
+    then state and institutional sources), so batch 1 carries the most
+    authoritative domains and later batches are only searched if it fails.
+    """
+    if cap <= 0:
+        return [domains]
+    return [domains[i:i + cap] for i in range(0, len(domains), cap)] or [[]]
 
 
 def active_provider() -> str:
@@ -707,7 +726,10 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         started = time.time()
         query_id = str(uuid.uuid4())
         high_stakes = bool(HIGH_STAKES_RE.search(query))
-        rows = q("SELECT domain, region FROM allowlist_domains WHERE enabled=1")
+        # rowid order is seed order is trust order — batch 1 must carry the
+        # apex bodies, so this ORDER BY is load-bearing, not cosmetic.
+        rows = q("""SELECT domain, region FROM allowlist_domains
+                    WHERE enabled=1 ORDER BY rowid""")
         by_region = {"IN": [r["domain"] for r in rows if r["region"] == "IN"],
                      "INTL": [r["domain"] for r in rows if r["region"] == "INTL"]}
         domains = by_region["IN"] + by_region["INTL"]
@@ -743,15 +765,28 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         if region_mode != "indian_only":
             passes.append(("INTL", "international"))
 
-        for region, label in passes:
+        # Providers cap allowed_domains, so a pool larger than the cap is
+        # rejected outright and Tier 2 never runs. Split into ordered batches
+        # and fall through them the same way regions fall through.
+        cap = int(cfg("search.max_domains_per_call",
+                      str(PROVIDERS[prov].get("max_domains", 100))))
+        batched = [(region, label, batch, n + 1, len(bs))
+                   for region, label in passes
+                   for bs in [_domain_batches(by_region[region], cap)]
+                   for n, batch in enumerate(bs)]
+
+        for region, label, pool, bn, btotal in batched:
             if answered_t2:
                 break
-            pool = by_region[region]
             if not pool:
                 fell(2, f"no_enabled_domains:{region}")
                 continue
+            # Fall-through tag keeps the batch: "IN" vs "IN#2" tells you whether
+            # the apex pool or only the long tail was searched.
+            tag = region if btotal == 1 else f"{region}#{bn}"
+            part = f" (batch {bn} of {btotal})" if btotal > 1 else ""
             yield sse("stage", {"label": f"Searching {len(pool)} allowlisted {label} "
-                                         f"sources via {PROVIDERS[prov]['label']}"})
+                                         f"sources{part} via {PROVIDERS[prov]['label']}"})
             try:
                 plain, citations, used_model, refused = _grounded_answer(
                     model, tier2_system(region), msgs, pool, effort,
@@ -762,16 +797,19 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
             except Exception as e:
                 yield sse("stage", {"label": f"{label.capitalize()} search unavailable",
                                     "state": "warn"})
-                fell(2, f"generation_failed:{region}:{type(e).__name__}")
+                # Carry the provider's own message: a bare exception class name
+                # hid a 400 that had disabled Tier 2 entirely.
+                detail = re.sub(r"\s+", " ", str(e))[:200]
+                fell(2, f"generation_failed:{tag}:{type(e).__name__}: {detail}")
                 continue
 
             plain, followups = _parse_followups(plain)
 
             if refused:
-                fell(2, f"provider_refusal:{region}")
+                fell(2, f"provider_refusal:{tag}")
             elif len(citations) < min_chunks:
                 # Retrieval gate: a lone source is not coverage.
-                fell(2, f"below_min_chunks:{region}({len(citations)}<{min_chunks})")
+                fell(2, f"below_min_chunks:{tag}({len(citations)}<{min_chunks})")
                 yield sse("stage", {"label": f"Only {len(citations)} qualifying {label} "
                                              f"source{'' if len(citations)==1 else 's'} — "
                                              f"below the minimum of {min_chunks}"})
@@ -785,18 +823,18 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                     c["region"] = region
                 v = _verdict(query, plain, citations)
                 if not v["ok"]:
-                    fell(2, f"verdict_unavailable:{region}")
+                    fell(2, f"verdict_unavailable:{tag}")
                 elif not v["answered"]:
                     # THE regression guard: the model produced prose but it does
                     # not substantively answer. Never serve this behind a badge.
-                    fell(2, f"not_answered:{region}")
+                    fell(2, f"not_answered:{tag}")
                 elif not v["grounded"]:
-                    fell(2, f"not_grounded:{region}")
+                    fell(2, f"not_grounded:{tag}")
                 elif not v.get("provenance_ok", True):
                     # Dosing/NLEM/programme claim resting on foreign guidance,
                     # or international guidance dressed up as Indian. Same
                     # severity as ungrounded: refuse rather than render.
-                    fell(2, f"provenance_violation:{region}")
+                    fell(2, f"provenance_violation:{tag}")
                 else:
                     answered_t2 = True
                     result.update({

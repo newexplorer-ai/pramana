@@ -112,10 +112,11 @@ check("fall-through logged with tier+reason",
       any(f["tier"] == 2 and f["reason"].startswith("not_answered")
           for f in (r1.get("fallthrough") or [])),
       str(r1.get("fallthrough")))
-check("both region passes attempted before falling through",
-      {"not_answered:IN", "not_answered:INTL"} <=
-      {f["reason"] for f in (r1.get("fallthrough") or [])},
-      str(r1.get("fallthrough")))
+reasons1 = {f["reason"] for f in (r1.get("fallthrough") or [])}
+check("both regions attempted before falling through",
+      any(r.startswith("not_answered:IN") for r in reasons1)
+      and any(r.startswith("not_answered:INTL") for r in reasons1),
+      str(reasons1))
 
 # ---------------------------------------------------------------- test 2
 # One result, below retrieval.min_chunks (2): generation result must be
@@ -251,7 +252,9 @@ r7a = ask("A question Indian sources answer?")
 check("Indian answer served as Tier 2", r7a["tier"] == 2, f"tier={r7a['tier']}")
 check("source_region is IN", r7a.get("source_region") == "IN",
       str(r7a.get("source_region")))
-check("international pass never run when India answers", seen == ["IN"], str(seen))
+check("international pass never run when India answers",
+      "INTL" not in seen, str(seen))
+check("stops at the first batch that answers", len(seen) == 1, str(seen))
 check("citations tagged with region",
       all(c.get("region") == "IN" for c in r7a["citations"]),
       str(r7a["citations"])[:120])
@@ -261,9 +264,11 @@ r7b = ask("A question only international sources answer?")
 check("falls through to international", r7b["tier"] == 2, f"tier={r7b['tier']}")
 check("source_region is INTL", r7b.get("source_region") == "INTL",
       str(r7b.get("source_region")))
-check("Indian pass attempted first", seen == ["IN", "INTL"], str(seen))
+check("every Indian batch tried before any international one",
+      seen.index("INTL") == seen.count("IN"), str(seen))
 check("Indian fall-through logged before international answer",
-      any(f["reason"].endswith(":IN") for f in (r7b.get("fallthrough") or [])),
+      any(":IN" in f["reason"] and ":INTL" not in f["reason"]
+          for f in (r7b.get("fallthrough") or [])),
       str(r7b.get("fallthrough")))
 check("citations tagged INTL",
       all(c.get("region") == "INTL" for c in r7b["citations"]),
@@ -348,20 +353,42 @@ A._openai_plain = lambda *a, **k: ""
 calls.clear()
 ask("A question that exhausts both passes?")
 
-check("two passes ran", len(calls) == 2, f"passes={len(calls)}")
-in_sys, in_pool = calls[0]
-intl_sys, intl_pool = calls[1]
+live_intl = {r["domain"] for r in A.q(
+    "SELECT domain FROM allowlist_domains WHERE enabled=1 AND region='INTL'")}
+live_in = {r["domain"] for r in A.q(
+    "SELECT domain FROM allowlist_domains WHERE enabled=1 AND region='IN'")}
 
-# the India-specific pass must carry zero international domains
-live_intl = {r["domain"] for r in
-             A.q("SELECT domain FROM allowlist_domains WHERE enabled=1 AND region='INTL'")}
-check("Indian pool contains zero INTL domains",
-      not (set(in_pool) & live_intl),
-      str(sorted(set(in_pool) & live_intl))[:120])
-check("international pool contains only INTL domains",
-      set(intl_pool) <= live_intl,
-      str(sorted(set(intl_pool) - live_intl))[:120])
-check("pools are disjoint", not (set(in_pool) & set(intl_pool)))
+in_calls = [(s, p) for s, p in calls if not (set(p) & live_intl)]
+intl_calls = [(s, p) for s, p in calls if set(p) & live_intl]
+in_sys, _ = in_calls[0]
+intl_sys, _ = intl_calls[0]
+
+# THE outage guard: a pool longer than the provider cap is a 400, so Tier 2
+# silently never runs. Every batch must sit inside the cap.
+CAP = A.PROVIDERS[A.active_provider()].get("max_domains", 100)
+check(f"no batch exceeds the provider cap of {CAP}",
+      all(len(p) <= CAP for _, p in calls),
+      f"sizes={[len(p) for _, p in calls]}")
+check("batches are non-empty", all(p for _, p in calls))
+
+# batching must not lose domains: the union of every batch is the full pool
+searched = {d for _, p in calls for d in p}
+check("every enabled Indian domain is searched",
+      live_in <= searched, str(sorted(live_in - searched))[:120])
+check("every enabled international domain is searched",
+      live_intl <= searched, str(sorted(live_intl - searched))[:120])
+check("no domain searched twice",
+      sum(len(p) for _, p in calls) == len(searched),
+      f"sent={sum(len(p) for _, p in calls)} unique={len(searched)}")
+
+# region purity survives batching
+check("Indian batches contain zero INTL domains",
+      all(not (set(p) & live_intl) for _, p in in_calls))
+check("international batches contain only INTL domains",
+      all(set(p) <= live_intl for _, p in intl_calls))
+check("apex bodies land in the first Indian batch",
+      "icmr.gov.in" in in_calls[0][1] and "main.mohfw.gov.in" in in_calls[0][1],
+      str(in_calls[0][1][:4]))
 
 # prompt text must describe the pool it was sent with
 check("Indian prompt does not claim international results",
