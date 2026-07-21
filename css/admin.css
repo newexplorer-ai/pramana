@@ -114,7 +114,10 @@ body.adminpage{background:#fff;background-image:none;overflow:hidden;}
 .tbl-row.cols-config{padding:12px 16px;}
 .tbl-row.cols-audit{padding:12px 16px;}
 
-.cell-domain{font-family:var(--mono);font-size:12px;color:var(--ink);font-weight:500;transition:color .15s;}
+.cell-domain{
+  font-family:var(--mono);font-size:12px;color:var(--ink);font-weight:500;
+  transition:color .15s;min-width:0;overflow-wrap:anywhere;line-height:1.4;
+}
 .cell-note{font-size:12px;line-height:1.5;color:var(--muted);}
 .cell-by{font-size:11px;color:var(--faint-2);}
 .cell-date{font-size:10px;color:#b3afa6;margin-top:1px;}
@@ -213,6 +216,18 @@ body.adminpage{background:#fff;background-image:none;overflow:hidden;}
 .switch-row.switch-off{background:linear-gradient(90deg,var(--adm-bg) 0%,transparent 60%);
   margin-left:-17px;margin-right:-17px;padding-left:17px;padding-right:17px;border-radius:6px;}
 .switch-row .toggle{flex:none;margin-top:2px;}
+
+/* ---------------- segmented filter ---------------- */
+.seg{display:flex;gap:2px;background:#f1efe9;border:1px solid var(--line);border-radius:8px;padding:2px;}
+.seg-btn{
+  border:none;background:none;border-radius:6px;padding:5px 11px;cursor:pointer;
+  font-family:inherit;font-size:11.5px;font-weight:600;color:var(--muted-2);
+  display:flex;align-items:center;gap:6px;transition:background .15s,color .15s;
+}
+.seg-btn:hover{color:var(--ink);}
+.seg-btn.on{background:var(--paper);color:var(--ink);box-shadow:0 1px 2px rgba(30,28,24,.08);}
+.seg-btn span{font-size:10px;font-weight:600;color:var(--faint-2);}
+.seg-btn.on span{color:var(--t1);}
 
 /* ---------------- provider switch ---------------- */
 .role-intro{margin:8px 0 0;font-size:11.5px;line-height:1.55;color:var(--muted-2);}

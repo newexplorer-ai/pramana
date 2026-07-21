@@ -120,14 +120,7 @@ SEED_USERS = [
     ("r.iyer@aiims.edu", "Dr. R. Iyer", "clinician", 1, "system"),      # test account
     ("p.nair@stjohns.in", "Dr. P. Nair", "clinician", 0, "system"),     # test account (disabled)
 ]
-SEED_DOMAINS = [
-    ("icmr.gov.in", "Indian Council of Medical Research — apex national research & guideline body."),
-    ("main.mohfw.gov.in", "Ministry of Health & Family Welfare — official policy & STGs."),
-    ("ijmr.org.in", "Indian Journal of Medical Research — ICMR peer-reviewed journal."),
-    ("nmji.in", "National Medical Journal of India — peer-reviewed, AIIMS-affiliated."),
-    ("indianpediatrics.net", "Indian Pediatrics — IAP official journal."),
-    ("cdsco.gov.in", "Central Drugs Standard Control Organisation — drug approvals & safety."),
-]
+from seed_domains import SEED_DOMAINS  # (domain, trust_note, enabled) × 199
 # key, value, default, description, critical
 SEED_CONFIG = [
     # One provider powers everything. Switched from Admin → Models & config.
@@ -153,9 +146,12 @@ def init_db() -> None:
         for email, name, role, enabled, by in SEED_USERS:
             q("INSERT INTO allowed_users VALUES(?,?,?,?,?,?,NULL)",
               (email, name, role, enabled, by, now()))
-    if not q("SELECT 1 FROM allowlist_domains LIMIT 1"):
-        for domain, note in SEED_DOMAINS:
-            q("INSERT INTO allowlist_domains VALUES(?,?,1,'system',?)", (domain, note, now()))
+    # Domains are additive on every boot so a curated list can grow without a
+    # migration. INSERT OR IGNORE deliberately leaves existing rows untouched —
+    # an admin's enable/disable decision must never be reverted by a redeploy.
+    for domain, note, enabled in SEED_DOMAINS:
+        q("INSERT OR IGNORE INTO allowlist_domains VALUES(?,?,?,'system',?)",
+          (domain, note, 1 if enabled else 0, now()))
     # Config is upserted every boot, not seeded once: a running deployment
     # must pick up newly-introduced keys without losing edited values.
     for key, value, default, desc, critical in SEED_CONFIG:

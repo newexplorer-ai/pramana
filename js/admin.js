@@ -203,7 +203,12 @@
   /* ---------- allowlist ---------- */
   function renderAllowlist(){
     const q = state.search.trim().toLowerCase();
-    const rows = state.domains.filter(r => !q || r.domain.toLowerCase().includes(q) || r.note.toLowerCase().includes(q));
+    const f = state.domainFilter || 'live';
+    const total = state.domains.length;
+    const liveN = state.domains.filter(r => r.on).length;
+    const rows = state.domains
+      .filter(r => f === 'all' || (f === 'live' ? r.on : !r.on))
+      .filter(r => !q || r.domain.toLowerCase().includes(q) || r.note.toLowerCase().includes(q));
     viewEl.innerHTML = `
       <div class="page-title">Allowed websites</div>
       <div class="page-lead">Single source of truth for the <code>allowed_domains</code> parameter on every Tier&nbsp;2 web-search call. This list is the entire quality gate on what the product may cite from the web.</div>
@@ -221,9 +226,14 @@
       </form>
 
       <div class="list-meta">
-        <div class="list-meta-note">Showing the effective list <b>exactly as sent to the API</b> — enabled domains only are live.</div>
+        <div class="seg">
+          <button class="seg-btn ${f==='live'?'on':''}" data-filter="live">Live <span>${liveN}</span></button>
+          <button class="seg-btn ${f==='off'?'on':''}" data-filter="off">Off <span>${total-liveN}</span></button>
+          <button class="seg-btn ${f==='all'?'on':''}" data-filter="all">All <span>${total}</span></button>
+        </div>
         <div class="search-box">${svg('search',{w:12,sw:2,stroke:'#a5a29a'})}<input id="fSearch" type="text" placeholder="Search" value="${esc(state.search)}"></div>
       </div>
+      <div class="list-meta-note" style="margin:0 2px 10px;">Only <b>Live</b> domains are sent to the search API. Everything else is recorded but cannot be cited.</div>
 
       <div class="tbl">
         <div class="tbl-head cols-domains"><div>Domain</div><div>Trust note</div><div class="cell-by-wrap">Added by</div><div style="text-align:right;">Enabled</div></div>
@@ -236,8 +246,14 @@
             <div class="cell-by-wrap"><div class="cell-by">${esc(r.by)}</div><div class="cell-date">${esc(r.date)}</div></div>
             <div class="cell-end"><button class="toggle ${r.on?'on':''}" data-i="${i}" role="switch" aria-checked="${r.on}" aria-label="Enable ${esc(r.domain)}"><span class="knob"></span></button></div>
           </div>`;}).join('')
-        : `<div class="tbl-empty">No domains match “${esc(state.search)}”.</div>`}
+        : `<div class="tbl-empty">No ${f==='all'?'':f+' '}domains match${state.search?` “${esc(state.search)}”`:''}.</div>`}
       </div>`;
+
+    viewEl.querySelectorAll('[data-filter]').forEach(el =>
+      el.addEventListener('click', () => {
+        state.domainFilter = el.getAttribute('data-filter');
+        renderAllowlist();
+      }));
 
     viewEl.querySelectorAll('.toggle').forEach(el =>
       el.addEventListener('click', () => {
