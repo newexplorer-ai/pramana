@@ -206,15 +206,11 @@
       ? `${svg(I.shield,{w:13,stroke:'#5a4b76'})}<span>High-stakes query — unverified answers are withheld</span>`
       : `${sparkle('#6a5a86',13)}<span>General model answer · no Indian-literature citation</span>`);
 
-    const modelChip = (!withheld && a.model)
-      ? `<span class="model-chip">${a.model}</span>` : '';
-
     convo.innerHTML = `
       <div class="query-echo" style="background:#fff;"><p>${esc(a.query)}</p></div>
       <div class="answer-head" style="margin-top:16px;">
         <div class="answer-meta">
           <span class="badge badge-t3">${sparkle('#6a5a86',11)}${withheld?'Not found · high-stakes':'General model'}</span>
-          ${modelChip}
         </div>
         <div class="finished">Finished thinking <span style="font-size:9px;">▾</span></div>
       </div>
@@ -265,11 +261,7 @@
           <div class="rail-label">Sources checked</div>
           <div class="chip-row">${(a.sourcesChecked||[]).map(s=>`<span class="checked-chip">${esc(s)}</span>`).join('')}</div>
         </div>
-        ${a.notFound?'':`
-        <div>
-          <div class="rail-label">Model</div>
-          <div class="chip-row"><span class="model-chip">${sparkle('#6a5a86',9)}${esc(a.model||'Claude')}</span></div>
-        </div>`}`;
+`;
       return;
     }
     if(a.tier === 2){
@@ -625,6 +617,10 @@
     return out.join('');
   }
 
+  /* Response time is a user-facing figure, not a metric: seconds to one
+     decimal, never raw milliseconds. */
+  const secs = ms => (Number(ms) > 0 ? (ms / 1000).toFixed(1) + 's' : '');
+
   function liveProse(res){
     return (res.segments||[]).map(seg => {
       const pills = (seg.citations||[]).map(i => {
@@ -678,7 +674,7 @@
           <span class="act" data-fb="up">${svg(I.like,{w:16,sw:1.7})}</span>
           <span class="act" data-fb="down">${svg(I.like,{w:16,sw:1.7,style:'transform:scaleY(-1)'})}</span>
           <span class="act" data-copy>${svg(I.copy,{w:16,sw:1.7})}</span>
-          <span class="spacer">${esc(res.model_used||'')} · ${res.latency_ms} ms</span>
+          <span class="spacer">${secs(res.latency_ms)}</span>
         </div>
         ${res.followups && res.followups.length ? `
         <div class="followups">
@@ -697,7 +693,6 @@
         <div class="answer-head" style="margin-top:16px;">
           <div class="answer-meta">
             <span class="badge badge-t3">${sparkle('#6a5a86',11)}${withheld?'Not found · high-stakes':'General model'}</span>
-            ${!withheld && res.model_used ? `<span class="model-chip">${esc(res.model_used)}</span>`:''}
           </div>
         </div>
         <p class="t3-prose">${esc(res.answer_text||'').replace(/\n/g,'<br>')}</p>
@@ -787,11 +782,7 @@
         <div class="rail-label">Sources checked</div>
         <div class="chip-row">${(res.sources_searched||[]).map(s=>`<span class="checked-chip">${esc(s.replace(/^web:/,''))}</span>`).join('')}</div>
       </div>
-      ${withheld || !res.model_used ? '' : `
-      <div>
-        <div class="rail-label">Model</div>
-        <div class="chip-row"><span class="model-chip">${sparkle('#6a5a86',9)}${esc(res.model_used)}</span></div>
-      </div>`}`;
+`;
   }
 
   /* ============================================================
