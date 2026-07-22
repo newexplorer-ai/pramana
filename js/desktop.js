@@ -122,13 +122,13 @@
       <div class="query-echo"><p>${esc(a.query)}</p></div>
       <div class="thinking"><span class="spinner"></span>Thinking…</div>
       <div class="retrieve-card">
-        <h3>Finding grounded sources</h3>
+        <h3>Finding reliable sources</h3>
         ${stages.map(s=>`<div class="rstep"><span class="dot"></span>${s.t}</div>`).join('')}
         <div class="progress-bar"></div>
       </div>
-      <p class="retrieve-note">Usually 4–8 seconds · streaming as soon as the first line is ready</p>`;
+      <p class="retrieve-note">Usually 20–30 seconds · we read the sources before answering</p>`;
     convoScroll.scrollTop = 0;
-    railBody.innerHTML = `<div class="rail-note">Retrieving grounded sources…</div>`;
+    railBody.innerHTML = `<div class="rail-note">Looking through reliable medical sources…</div>`;
     railTitle.textContent = 'Sources';
     railMode.textContent = '…';
 
@@ -467,11 +467,11 @@
       <div class="query-echo"><p>${esc(query)}</p></div>
       <div class="thinking"><span class="spinner"></span>Thinking…</div>
       <div class="retrieve-card">
-        <h3>Finding grounded sources</h3>
+        <h3>Finding reliable sources</h3>
         <div id="liveStages"></div>
         <div class="progress-bar"></div>
       </div>
-      <p class="retrieve-note">Usually 4–8 seconds · answers stream as soon as they are ready</p>`;
+      <p class="retrieve-note">Usually 20–30 seconds · we read the sources before answering</p>`;
     convoScroll.scrollTop = 0;
     railTitle.textContent = 'Sources'; railMode.textContent = '…';
     railBody.innerHTML = `<div class="rail-note">Searching allowlisted Indian domains…</div>`;

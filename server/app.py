@@ -500,7 +500,7 @@ def _mixed_batches(by_region: dict, indian_slots: int, cap: int) -> list[tuple]:
         ins = ins[len(take_in):]
         batch = take_in + intls[:cap - len(take_in)]
         intls = intls[cap - len(take_in):]
-        out.append(("MIXED", "Indian + international", batch, n, 0))
+        out.append(("MIXED", "Indian and international", batch, n, 0))
     # Second pass fills in the now-known total so the UI can say "1 of 2".
     return [(r, l, b, i, len(out)) for r, l, b, i, _ in out]
 
@@ -856,10 +856,10 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
             # the apex pool or only the long tail was searched.
             tag = region if btotal == 1 else f"{region}#{bn}"
             part = f" (batch {bn} of {btotal})" if btotal > 1 else ""
-            # Stage labels are clinician-facing: they name what is being
-            # searched, never which vendor is doing it.
-            yield sse("stage", {"label": f"Searching {len(pool)} allowlisted {label} "
-                                         f"sources{part}"})
+            # Stage labels are read by clinicians mid-wait. No vendor names, no
+            # "allowlisted", no pool sizes or batch numbers — none of it means
+            # anything at the point of care.
+            yield sse("stage", {"label": f"Searching reliable {label} medical sources"})
             try:
                 plain, citations, used_model, refused = _grounded_answer(
                     model, tier2_system(region), msgs, pool, effort,
@@ -868,7 +868,7 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                 yield sse("error", {"detail": str(e.detail)})
                 return
             except Exception as e:
-                yield sse("stage", {"label": f"{label.capitalize()} search unavailable",
+                yield sse("stage", {"label": f"Could not reach {label} sources",
                                     "state": "warn"})
                 # Carry the provider's own message: a bare exception class name
                 # hid a 400 that had disabled Tier 2 entirely.
@@ -883,12 +883,10 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
             elif len(citations) < min_chunks:
                 # Retrieval gate: a lone source is not coverage.
                 fell(2, f"below_min_chunks:{tag}({len(citations)}<{min_chunks})")
-                yield sse("stage", {"label": f"Only {len(citations)} qualifying {label} "
-                                             f"source{'' if len(citations)==1 else 's'} — "
-                                             f"below the minimum of {min_chunks}"})
+                yield sse("stage", {"label": "Not enough supporting references found"})
             else:
-                yield sse("stage", {"label": f"Retrieved {len(citations)} cited "
-                                             f"{label} passages"})
+                yield sse("stage", {"label": f"Found {len(citations)} supporting "
+                                             f"reference{'' if len(citations)==1 else 's'}"})
                 yield sse("stage", {"label": "Checking the answer against its sources"})
                 # Tag before the verdict: the judge decides provenance from the
                 # [IN]/[INTL] markers, so untagged citations would read as Indian.
@@ -932,17 +930,18 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
             if high_stakes or not tier3_enabled:
                 reason = "high_stakes" if high_stakes else "tier3_disabled"
                 fell(3, reason)
-                yield sse("stage", {"label": "High-stakes query — withholding unverified answer"
-                                    if high_stakes else
-                                    "Grounded-only mode — no unverified answer shown"})
+                yield sse("stage", {"label":
+                    "Dosing or interaction question — no answer without a reliable source"
+                    if high_stakes else
+                    "No answer shown without a reliable source"})
                 result.update({
                     "tier": None, "status": "not_found", "withheld_reason": reason,
                     "answer_text": "", "segments": [], "model_used": None,
                 })
             else:
                 t3_model, t3_prov = model, prov
-                yield sse("stage", {"label": "No grounded source — falling back to "
-                                             "the general model"})
+                yield sse("stage", {"label": "No reliable source found — "
+                                             "answering from general knowledge"})
                 try:
                     t3_client = _client(t3_model)
                     if t3_prov == "openai":
