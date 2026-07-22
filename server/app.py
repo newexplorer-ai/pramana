@@ -116,8 +116,9 @@ CREATE TABLE IF NOT EXISTS saved_conversations(
   UNIQUE(user_email, conversation_id));
 """
 
-# The owner is the ONLY admin. Everyone else joins as a clinician via the
-# approval queue (or is added explicitly in Admin → Beta access).
+# Seed roles only — this runs once, on an empty database. Roles are read from
+# allowed_users at request time, so promotions made in Admin → Beta access are
+# authoritative and survive redeploys.
 SEED_USERS = [
     ("k.prasad.iitr@gmail.com", "Dr. K. Prasad", "admin", 1, "system"),
     ("r.iyer@aiims.edu", "Dr. R. Iyer", "clinician", 1, "system"),      # test account

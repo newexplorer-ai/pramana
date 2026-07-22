@@ -43,7 +43,8 @@ const PRAMANA_AUTH = (function(){
 
   /* ---------- seed allowlist ----------
      Stands in for the `allowed_users` table. */
-  // The owner is the ONLY admin; everyone else is a clinician.
+  // Mock-demo seed only. In LIVE mode roles come from the server, where they
+  // are admin-editable — this list does not constrain who can be an admin.
   const SEED_USERS = [
     { email:'k.prasad.iitr@gmail.com', name:'Dr. K. Prasad', role:'admin',     enabled:true, by:'system',        date:'12 Jun 2026' },
     { email:'r.iyer@aiims.edu',        name:'Dr. R. Iyer',   role:'clinician', enabled:true, by:'Dr. K. Prasad', date:'02 Jul 2026' },
