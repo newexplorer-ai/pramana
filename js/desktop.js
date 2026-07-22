@@ -559,8 +559,11 @@
 
   function renderLiveError(query, detail){
     setStrip(null);
-    const friendly = /anthropic_credentials|anthropic_sdk|authentication method|api_key/i.test(detail||'')
-      ? 'The backend has no Anthropic credentials. Export ANTHROPIC_API_KEY and restart the server.'
+    // Clinician-facing: never name the vendor or tell a doctor to export an
+    // environment variable. The raw detail stays in the collapsed line below
+    // for whoever is debugging.
+    const friendly = /credentials|authentication method|api_key/i.test(detail||'')
+      ? 'Pramana is not configured to answer questions yet. Please contact your administrator.'
       : /daily_cap/.test(detail||'') ? 'You have reached the daily query cap for the beta.'
       : 'Something went wrong answering this question.';
     convo.innerHTML = `

@@ -856,8 +856,10 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
             # the apex pool or only the long tail was searched.
             tag = region if btotal == 1 else f"{region}#{bn}"
             part = f" (batch {bn} of {btotal})" if btotal > 1 else ""
+            # Stage labels are clinician-facing: they name what is being
+            # searched, never which vendor is doing it.
             yield sse("stage", {"label": f"Searching {len(pool)} allowlisted {label} "
-                                         f"sources{part} via {PROVIDERS[prov]['label']}"})
+                                         f"sources{part}"})
             try:
                 plain, citations, used_model, refused = _grounded_answer(
                     model, tier2_system(region), msgs, pool, effort,
@@ -940,7 +942,7 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
             else:
                 t3_model, t3_prov = model, prov
                 yield sse("stage", {"label": "No grounded source — falling back to "
-                                             f"{PROVIDERS[t3_prov]['label']} general model"})
+                                             "the general model"})
                 try:
                     t3_client = _client(t3_model)
                     if t3_prov == "openai":
