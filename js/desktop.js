@@ -153,8 +153,8 @@
     convoScroll.classList.remove('t3-bg');
     const isWeb = a.tier === 2;
     const badge = isWeb
-      ? `<span class="badge badge-t2">🌐 Grounded · Web allowlist <span class="t">Tier&nbsp;2</span></span>`
-      : `<span class="badge badge-t1">✓ Grounded · Corpus <span class="t">Tier&nbsp;1</span></span>`;
+      ? `<span class="badge badge-t2">🌐 Grounded · Web allowlist</span>`
+      : `<span class="badge badge-t1">✓ Grounded · Corpus</span>`;
     const g = a.group;
     const head = `<div class="src-head-l">${svg(isWeb?I.globe:I.file,{w:14,sw:1.9})}${g.label}</div><div class="src-head-r">${g.body}</div>`;
     const foot = g.kind==='gov'
@@ -213,7 +213,7 @@
       <div class="query-echo" style="background:#fff;"><p>${esc(a.query)}</p></div>
       <div class="answer-head" style="margin-top:16px;">
         <div class="answer-meta">
-          <span class="badge badge-t3">${sparkle('#6a5a86',11)}${withheld?'Not found · high-stakes':'General model'} <span class="t">Tier&nbsp;3</span></span>
+          <span class="badge badge-t3">${sparkle('#6a5a86',11)}${withheld?'Not found · high-stakes':'General model'}</span>
           ${modelChip}
         </div>
         <div class="finished">Finished thinking <span style="font-size:9px;">▾</span></div>
@@ -650,22 +650,20 @@
       setStrip(null);
       convoScroll.classList.remove('t3-bg');
       const primary = res.citations[0] || {};
-      const intl  = res.source_region === 'INTL';
-      const mixed = res.source_region === 'MIXED';
-      const rlabel = mixed ? 'Indian + international' : intl ? 'International' : 'Indian';
+      // One neutral label for every grounded answer: the tier number and the
+      // region call-out are internal concerns, and the per-citation IN/INTL
+      // tags in the sources rail carry the provenance detail.
       convo.innerHTML = `
         <div class="query-echo"><p>${esc(query)}</p></div>
         <div class="answer-head">
           <div class="answer-meta">
-            <span class="badge ${intl||mixed?'badge-intl':'badge-t2'}">🌐 Grounded · ${rlabel} sources <span class="t">Tier&nbsp;2</span></span>
+            <span class="badge badge-t2">🌐 Referenced from reliable Indian and international sources</span>
             <span class="stamp">Answered ${esc(res.retrieved_at)}</span>
           </div>
         </div>
-        ${intl?`<div class="intl-note">${svg(I.globe,{w:13,sw:1.9})}<span>No Indian source covered this question, so the answer is grounded in international literature. Check it against Indian availability, dosing, and practice before applying.</span></div>`:''}
-        ${mixed?`<div class="intl-note">${svg(I.globe,{w:13,sw:1.9})}<span>This answer draws on both Indian and international sources — check the region tag on each citation. Claims resting on international literature may not match Indian availability, dosing, or practice.</span></div>`:''}
         <div class="src-card web">
           <div class="src-head">
-            <div class="src-head-l">${svg(I.globe,{w:14,sw:1.9})}Web · allowlisted ${rlabel.toLowerCase()} domain</div>
+            <div class="src-head-l">${svg(I.globe,{w:14,sw:1.9})}Web · allowlisted domain</div>
             <div class="src-head-r">${esc((primary.domain||'').toUpperCase())}</div>
           </div>
           <div class="src-body">
@@ -698,7 +696,7 @@
         <div class="query-echo" style="background:#fff;"><p>${esc(query)}</p></div>
         <div class="answer-head" style="margin-top:16px;">
           <div class="answer-meta">
-            <span class="badge badge-t3">${sparkle('#6a5a86',11)}${withheld?'Not found · high-stakes':'General model'} <span class="t">Tier&nbsp;3</span></span>
+            <span class="badge badge-t3">${sparkle('#6a5a86',11)}${withheld?'Not found · high-stakes':'General model'}</span>
             ${!withheld && res.model_used ? `<span class="model-chip">${esc(res.model_used)}</span>`:''}
           </div>
         </div>
@@ -744,8 +742,7 @@
   function renderLiveRail(res){
     if(res.tier === 2 && res.citations.length){
       railTitle.textContent = `Sources · ${res.citations.length}`;
-      railMode.textContent = res.source_region === 'MIXED' ? 'IN + INTL'
-                           : res.source_region === 'INTL'  ? 'International' : 'Indian';
+      railMode.textContent = 'Grounded';
       // Per-citation region tag: with a mixed pool the answer's own badge no
       // longer tells you which claim rests on which body's literature.
       const rtag = c => `<span class="rgn ${c.region==='INTL'?'intl':'ind'}">${c.region==='INTL'?'INTL':'IN'}</span>`;
