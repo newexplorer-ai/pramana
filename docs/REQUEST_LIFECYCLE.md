@@ -1,8 +1,8 @@
 # How Pramana answers one question
 
 A trace of exactly what happens between a clinician pressing **Send** and an
-answer appearing, as the system runs today. Line references point at
-`server/app.py` unless noted.
+answer appearing, as the system runs today. References name functions in
+`server/app.py` (stable across edits) rather than line numbers.
 
 > **Current config on production** (all admin-tunable in *Admin → Models & config*):
 > provider `openai` · generation `gpt-5.2` · judge `gpt-5-mini` ·
@@ -10,6 +10,11 @@ answer appearing, as the system runs today. Line references point at
 > `retrieval.min_chunks = 1` · `websearch.max_uses = 3` ·
 > allowlist 200 domains (100 Indian, 100 international) ·
 > provider domain cap 100.
+>
+> A fourth mode, **`dual`**, is built and deployed but **dormant** — production
+> runs `indian_first`. It replaces the batch loop with two parallel searches
+> and a compose step; see [§4d](#4d-dual-mode). The rest of this trace describes
+> the current `indian_first` path.
 >
 > These values change the routing but not the shape of the flow below.
 
@@ -54,44 +59,44 @@ corpus was cut from scope, so the sequence starts at Tier 2.
 
 The token is a random 32-byte string minted at login (`issue_token`,
 `secrets.token_urlsafe(32)`), stored in `auth_sessions`. `current_user`
-(app.py:244) joins it to `allowed_users` on every request and rejects if the
+joins it to `allowed_users` on every request and rejects if the
 row is missing or `enabled = 0` — so disabling a user in the admin panel kills
 their live sessions immediately.
 
-## 2. Gatekeeping (before any model call) — app.py:757
+## 2. Gatekeeping (before any model call) — the `ask()` handler
 
 1. **Empty query** → `400`.
-2. **Daily cap** (app.py:763): count this user's `query_logs` rows in the last
+2. **Daily cap** (in `ask()`): count this user's `query_logs` rows in the last
    day; at or above `cost.daily_user_cap` (40) → `429`.
    *Known bug: the window comparison is off — see [Known issues](#known-issues).*
-3. **Conversation** (app.py:770): reuse the supplied `conversation_id` or mint
+3. **Conversation** (in `ask()`): reuse the supplied `conversation_id` or mint
    a new UUID. First time seen, insert a `conversations` row whose title is the
    query's first 80 chars.
 
 Then the SSE stream opens and everything below runs inside it.
 
-## 3. Request setup — app.py:779
+## 3. Request setup (inside `stream()`)
 
 - `query_id` — a fresh UUID for this single turn.
-- **High-stakes flag** (app.py:781): `HIGH_STAKES_RE.search(query)` — a regex
+- **High-stakes flag:** `HIGH_STAKES_RE.search(query)` — a regex
   matching `dose|dosing|dosage|mg/kg|interaction|contraindicat|overdose|titrat`.
   This one boolean decides later whether an ungrounded answer may ever be shown.
-- **Allowlist load** (app.py:784): all `enabled=1` domains, ordered by
+- **Allowlist load:** all `enabled=1` domains, ordered by
   `priority, rowid` (the curated editorial ranking), split into
   `by_region["IN"]` and `by_region["INTL"]`.
-- **History** (app.py:802 / `_load_history`): the last `context.max_turns` (6)
+- **History** (`_load_history`): the last `context.max_turns` (6)
   turns of this conversation, oldest-first, prepended to the new question so
   follow-ups have context.
 - **`result` skeleton** is seeded with `sources_searched` (every domain that
   *could* be searched, `web:`-prefixed), `retrieved_at`, and empty
   `citations`/`followups`.
 
-## 4. Tier 2 — grounded web search — app.py:821
+## 4. Tier 2 — grounded web search
 
 Tier 2 is the product. It searches the allowlist and only serves an answer that
 survives a citation gate **and** an independent judge.
 
-### 4a. Building the search batches — app.py:826
+### 4a. Building the search batches
 
 A provider caps how many domains one search call may filter on (OpenAI: 100).
 So the pool is split into **cap-sized batches**, tried in order, and the loop
@@ -103,6 +108,7 @@ built depends on `search.region_mode`:
 | `indian_first` *(current)* | Batch 1 = up to 100 Indian; then International | only if every Indian batch fails |
 | `indian_only` | Indian batches only | never |
 | `mixed` | Batch 1 = top 40 Indian + top 60 International; leftovers next | in the same first call |
+| `dual` *(built, dormant)* | not a batch loop — two parallel searches + compose ([§4d](#4d-dual-mode)) | always, in parallel with Indian |
 
 Under the current `indian_first` mode, all 100 Indian domains fit one call, so
 Batch 1 is purely Indian and International is a *separate later batch* reached
@@ -114,14 +120,14 @@ no longer guaranteed just because Indian sources exist — so it is enforced by
 the prompt's PROVENANCE rule (see 4c) and the answer's region is derived from
 the citations actually used, not from which pool was searched.
 
-### 4b. The per-batch loop — app.py:849
+### 4b. The per-batch loop
 
 For each batch, until one answers:
 
 1. **Emit stage** — `"Searching reliable Indian medical sources"`
    (or `international` / `Indian and international`). No vendor name, pool size,
    or batch number reaches the clinician.
-2. **Generate with search** (`_grounded_answer`, app.py:722): one model call
+2. **Generate with search** (`_grounded_answer`): one model call
    with a web-search tool attached and `allowed_domains` set to this batch. The
    **search happens server-side inside that one call** — the model searches,
    reads, and writes the answer with citations attached, in a single round trip.
@@ -133,16 +139,16 @@ For each batch, until one answers:
      searches.
 3. **Parse follow-ups** (`_parse_followups`): split the trailing
    `[[FOLLOWUPS]] a | b` marker off the answer text.
-4. **Retrieval gate** (app.py:883): fewer than `retrieval.min_chunks` (1)
+4. **Retrieval gate:** fewer than `retrieval.min_chunks` (1)
    citations → discard, log `below_min_chunks`, emit
    *"Not enough supporting references found"*, try next batch. A lone source is
    not coverage.
-5. **Tag citations by region** (app.py:894): each citation is tagged `IN`/`INTL`
+5. **Tag citations by region:** each citation is tagged `IN`/`INTL`
    by its domain (suffix-matched, since providers return hosts like `www.who.int`
    for an allowlisted `who.int`; an unrecognised host is never treated as Indian).
    This happens **before** the judge, so the judge sees the region markers.
 
-### 4c. The judge — app.py:896 / `_verdict`
+### 4c. The judge — `_verdict`
 
 A **separate `gpt-5-mini` model call** audits the draft against its own
 citations and returns three booleans. (It is a separate call because Anthropic
@@ -162,20 +168,66 @@ itself fails, `ok=false`.
 
 **Any** of these failing (`not ok`, `not answered`, `not grounded`,
 `not provenance_ok`) → the answer is thrown away, the reason is logged, and the
-loop moves to the next batch. Only when all pass (app.py:910) is the Tier 2
+loop moves to the next batch. Only when all pass is the Tier 2
 answer committed: `tier=2`, `status=answered`, the segments, the citations, and
 `source_region` = the single region if all citations agree, else `MIXED`.
 
-## 5. Tier 3 — fallback or refusal — app.py:928
+### 4d. Dual mode — parallel search + compose (built, dormant) {#4d-dual-mode}
+
+When `search.region_mode = dual`, §4a–4b are replaced by a different shape. It
+exists because the batch modes treat the two pools as *fallbacks for each
+other*: `mixed` puts both in one call, but `allowed_domains` is a **permission
+filter, not a quota** — the denser international pool consumes the single search
+budget and the Indian domains are never meaningfully queried. Dual fixes that by
+giving each pool **its own call with its own budget the other cannot consume.**
+
+1. **Retrieval-plan classifier** (`_retrieval_plan`): one small-model call
+   returns `both` / `international_only` / `indian_only`, biased to `both`,
+   failing open to `both` on any error. It exists so a pure-science question can
+   skip the Indian call and stay at single-pool cost. Disableable via
+   `search.dual_classifier` (off ⇒ always `both`).
+2. **Two dedicated searches, in parallel** (`ThreadPoolExecutor`, max 2 workers):
+   the Indian call gets `allowed_domains` = Indian pool only, the international
+   call gets the international pool only. The blocking SDK calls release the GIL
+   on network I/O, so **wall-clock is one search, not two** (measured: 1.0 s for
+   two 1 s searches). Because each call's allowlist is one pool, the Indian
+   search is *structurally incapable* of returning international results — the
+   starvation failure is impossible, not merely discouraged.
+3. **Gate + region-tag each draft** exactly as §4b does, independently.
+4. **Compose** (`_compose`, `both_answered` case only): one call with **no
+   search tool**, on the generation model. Its prompt anchors on the Indian
+   position where one exists, always shows that international evidence exists,
+   surfaces conflicts with attribution rather than averaging, and states plainly
+   where Indian sources are silent. Output = one Indian-anchored answer; its
+   citations are the **union** of both drafts, still region-tagged.
+5. **Judge** the composed answer (or the single-pool draft) with the same
+   `_verdict` — it audits what the clinician will actually see, so a
+   foreign-sourced dosing claim introduced by composition is still caught by
+   `provenance_ok`.
+
+**Asymmetric outcomes are first-class**, recorded in `pool_outcome`:
+
+| Indian call | Intl call | `pool_outcome` | result |
+|---|---|---|---|
+| passes | passes | `both_answered` | compose merges both |
+| passes | empty/fails | `indian_only_answered` | Indian draft served directly (no compose) |
+| empty/fails | passes | `intl_only_answered` | international draft served, honestly labelled |
+| empty/fails | empty/fails | `both_empty` | fall through to Tier 3 / not-found |
+
+The per-pool citation counts (`indian_citations`, `intl_citations`) are logged
+alongside, which is what turns a thin-Indian-coverage question into a visible,
+queryable signal instead of a silent international-only answer.
+
+## 5. Tier 3 — fallback or refusal
 
 Reached only if **no** Tier 2 batch produced a served answer.
 
-- **Withhold** (app.py:930): if the query is **high-stakes**, *or*
+- **Withhold:** if the query is **high-stakes**, *or*
   `answers.allow_tier3` is off → no answer. `tier=null`, `status=not_found`.
   The clinician sees *"Dosing or interaction question — no answer without a
   reliable source"*. This is the deliberate safety stance: never give an
   ungrounded dosing/interaction answer.
-- **General-model answer** (app.py:941): otherwise, one plain model call with
+- **General-model answer:** otherwise, one plain model call with
   `TIER3_SYSTEM` (which forbids inventing citations, forbids specific doses, and
   requires a hedged "Generally…" opener stating it may not match Indian
   guidance). Result: `tier=3`, `status=unverified`, **no citations**. The UI
@@ -183,18 +235,20 @@ Reached only if **no** Tier 2 batch produced a served answer.
   warning.
 - If Tier 3 errors or returns empty → `not_found`.
 
-## 6. Invariant guard — app.py:991
+## 6. Invariant guard
 
 A final safety net before anything is shown: if a response claims a tier but has
 no answer text, or claims Tier 2 but carries no citations, it is forcibly
 downgraded to `not_found`. This makes "a grounded badge with nothing real behind
 it" structurally impossible, independent of anything the model or judge did.
 
-## 7. Persist + respond — app.py:1002
+## 7. Persist + respond
 
 - **`query_logs`** — one row: tier, status, high-stakes, latency, model used,
   `source_region`, and the full `fallthrough` JSON (every batch that failed and
-  why). This is what drives the admin **gap log**.
+  why). In dual mode it also carries `pool_outcome` and the per-pool
+  `indian_citations` / `intl_citations` counts. This is what drives the admin
+  **gap log**.
 - **`turns`** — the user question always; the assistant answer only if one was
   produced. These become the conversation history for the next follow-up.
 - **Emit `result`** — the one SSE event carrying the answer object the frontend
@@ -228,6 +282,14 @@ seconds.
   as far as the judge).
 - **Tier 3 answer:** the Tier 2 attempts **plus** one more general-model call.
 - **Withheld / not found:** the Tier 2 attempts only — no generation beyond them.
+
+**In `dual` mode**, a `both`-plan question costs a classifier call + two
+searches (parallel, so ~one search of *latency* but ~2× search *spend*) +
+compose + judge — 5 model calls, ~one search of wall-clock. A single-pool plan
+(`international_only` / `indian_only`) skips compose and stays at classifier +
+1 search + judge. The design accepts the extra spend to get Indian/international
+parity right, and logs `pool_outcome` so the cost trade can later be tuned from
+real numbers.
 
 A non-medical question ("plan a trip to Italy") currently runs the **entire**
 Tier 2 loop, finds nothing, and produces a Tier 3 answer — 3 model calls for a
@@ -264,6 +326,6 @@ These are live as of this writing and documented here so the trace is honest:
 
 ---
 
-*Generated from `server/app.py` as deployed. If the routing behaves unexpectedly,
+*Describes `server/app.py` as deployed. If the routing behaves unexpectedly,
 the `fallthrough` column in `query_logs` (admin gap log) records the exact reason
 each batch was rejected.*
