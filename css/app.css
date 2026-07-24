@@ -64,6 +64,10 @@ body.apppage{
 }
 .convo-scroll{flex:1;min-height:0;overflow-y:auto;padding:26px 24px;}
 .convo{max-width:720px;margin:0 auto;animation:fade .3s ease both;}
+/* Each Q&A in a thread. A follow-up appends a new .turn; a subtle rule
+   separates it from the prior answer so the conversation reads top-to-bottom. */
+.convo .turn + .turn{margin-top:26px;padding-top:26px;border-top:1px solid var(--line, #e7e6e2);}
+.convo .turn{animation:fade .3s ease both;}
 
 /* conversation-scale overrides of shared components */
 .convo .query-echo{border-radius:11px;padding:13px 15px 13px 18px;}

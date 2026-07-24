@@ -52,8 +52,20 @@
   ];
   let activeRecent = 'diabetes';
   let current = null;            // the conversation on screen (for Save)
+  let activeTurn = null;         // the .turn element the current answer renders into
   let timers = [];
   const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
+
+  // A conversation is a stack of .turn blocks (question + answer). A follow-up
+  // appends a new turn instead of replacing the thread, so the prior Q&A stays
+  // on screen — the backend already carries the context.
+  function newTurn(){
+    const t = document.createElement('div');
+    t.className = 'turn';
+    convo.appendChild(t);
+    activeTurn = t;
+    return t;
+  }
 
   /* LIVE mode state (backend present): server-issued conversation id and
      this session's real recents. */
@@ -75,6 +87,11 @@
         el.addEventListener('click', () => {
           const r = LIVE.recents[+el.getAttribute('data-i')];
           LIVE.convId = r.convId;
+          // Opening a past conversation resets the thread to that turn. (Only the
+          // latest turn is cached client-side; full-thread reload is future work.)
+          convo.innerHTML = ''; newTurn();
+          current = { title: truncate(r.query,60), query: r.query };
+          mainTitle.textContent = current.title;
           renderLiveAnswer(r.result, r.query);
         }));
       return;
@@ -461,23 +478,30 @@
     clearTimers();
     setNav('convo'); setStrip(null);
     convoScroll.classList.remove('t3-bg');
-    current = { title: truncate(query,60), query };
-    mainTitle.textContent = current.title;
-    convo.innerHTML = `
+    // Fresh conversation (no server-issued id yet) clears the thread and sets
+    // the title from the first question; a follow-up keeps both and appends.
+    const fresh = !LIVE.convId;
+    if(fresh){
+      convo.innerHTML = '';
+      current = { title: truncate(query,60), query };
+      mainTitle.textContent = current.title;
+    }
+    const turn = newTurn();
+    turn.innerHTML = `
       <div class="query-echo"><p>${esc(query)}</p></div>
       <div class="thinking"><span class="spinner"></span>Thinking…</div>
       <div class="retrieve-card">
         <h3>Finding reliable sources</h3>
-        <div id="liveStages"></div>
+        <div class="live-stages"></div>
         <div class="progress-bar"></div>
       </div>
       <p class="retrieve-note">Usually 20–30 seconds · we read the sources before answering</p>`;
-    convoScroll.scrollTop = 0;
+    turn.scrollIntoView({ behavior: 'smooth', block: 'start' });
     railTitle.textContent = 'Sources'; railMode.textContent = '…';
     railBody.innerHTML = `<div class="rail-note">Searching allowlisted Indian domains…</div>`;
     renderRecents();
 
-    const stagesEl = document.getElementById('liveStages');
+    const stagesEl = turn.querySelector('.live-stages');
     const addStage = label => {
       if(!stagesEl.isConnected) return;
       const prev = stagesEl.querySelector('.rstep.active');
@@ -509,12 +533,12 @@
      tier — the clinician sees what was searched, never a synthesized answer. */
   function renderNotFound(res, query){
     setStrip(null);
-    convoScroll.classList.remove('t3-bg');
+    if(!activeTurn) newTurn();
     const why = {
       all_tiers_failed: 'The allowlisted sources did not substantively answer this question, and no unverified answer is being shown in its place.',
     }[res.withheld_reason] || 'No source substantively answered this question.';
 
-    convo.innerHTML = `
+    activeTurn.innerHTML = `
       <div class="query-echo"><p>${esc(query)}</p></div>
       <div class="nf-card">
         <div class="nf-head">${svg(I.info,{w:15,stroke:'#8a5a3c'})}<span>Not found in the indexed Indian literature</span></div>
@@ -524,11 +548,10 @@
           `<span class="checked-chip">${esc(String(s).replace(/^web:/,''))}</span>`).join('') ||
           '<span class="checked-chip">none</span>'}</div>
         <div class="nf-actions">
-          <a class="suggest-src" id="suggestSrc">Suggest a source</a>
+          <a class="suggest-src">Suggest a source</a>
         </div>
       </div>
       <div style="height:20px;"></div>`;
-    convoScroll.scrollTop = 0;
 
     railTitle.textContent = 'Sources · 0';
     railMode.textContent = 'Not found';
@@ -547,8 +570,8 @@
       </div>`;
 
     renderRecents();
-    const sug = document.getElementById('suggestSrc');
-    sug.addEventListener('click', async () => {
+    const sug = activeTurn.querySelector('.suggest-src');
+    if(sug) sug.addEventListener('click', async () => {
       try { await PRAMANA_API.post('/api/suggest-source', { query_id: res.query_id }); } catch(e){}
       sug.textContent = '✓ Logged to the corpus-gap register — thank you';
       sug.classList.add('done');
@@ -564,7 +587,8 @@
       ? 'Pramana is not configured to answer questions yet. Please contact your administrator.'
       : /daily_cap/.test(detail||'') ? 'You have reached the daily query cap for the beta.'
       : 'Something went wrong answering this question.';
-    convo.innerHTML = `
+    if(!activeTurn) newTurn();
+    activeTurn.innerHTML = `
       <div class="query-echo"><p>${esc(query)}</p></div>
       <div class="notice notice-blue" style="margin-top:16px;">${svg(I.info,{w:11,stroke:'#3a5876'})}
         <span><b style="font-weight:600;">${esc(friendly)}</b><br>
@@ -634,23 +658,20 @@
 
   function renderLiveAnswer(res, query){
     clearTimers();
-    setNav('convo');
+    setNav('convo'); setStrip(null);
     LIVE.queryId = res.query_id;
-    current = { title: truncate(query,60), query };
-    mainTitle.textContent = current.title;
 
     // tier === null means every tier fell through: a distinct not-found state.
     // No badge, no tier colour, no synthesized answer — just what was searched.
     if(res.tier === null || res.status === 'not_found') return renderNotFound(res, query);
 
+    if(!activeTurn) newTurn();          // recents/direct render without askLive
     if(res.tier === 2){
-      setStrip(null);
-      convoScroll.classList.remove('t3-bg');
       const primary = res.citations[0] || {};
       // One neutral label for every grounded answer: the tier number and the
       // region call-out are internal concerns, and the per-citation IN/INTL
       // tags in the sources rail carry the provenance detail.
-      convo.innerHTML = `
+      activeTurn.innerHTML = `
         <div class="query-echo"><p>${esc(query)}</p></div>
         <div class="answer-head">
           <div class="answer-meta">
@@ -687,9 +708,7 @@
     } else {
       // Live Tier 3: an unverified general-model answer. A fully withheld turn
       // (tier null) is handled by renderNotFound above and never reaches here.
-      convoScroll.classList.add('t3-bg');
-      setStrip(`${sparkle('#6a5a86',13)}<span>General model answer · no Indian-literature citation</span>`);
-      convo.innerHTML = `
+      activeTurn.innerHTML = `
         <div class="query-echo" style="background:#fff;"><p>${esc(query)}</p></div>
         <div class="answer-head" style="margin-top:16px;">
           <div class="answer-meta">
@@ -702,31 +721,33 @@
           <span class="act" data-fb="up">${svg(I.like,{w:16,sw:1.7})}</span>
           <span class="act" data-fb="down">${svg(I.like,{w:16,sw:1.7,style:'transform:scaleY(-1)'})}</span>
           <span class="act" data-copy>${svg(I.copy,{w:16,sw:1.7})}</span>
-          <a class="suggest-src" id="suggestSrc">Suggest a source</a>
+          <a class="suggest-src">Suggest a source</a>
         </div>
         <div style="height:20px;"></div>`;
-      const sug = document.getElementById('suggestSrc');
-      sug.addEventListener('click', async () => {
+      const sug = activeTurn.querySelector('.suggest-src');
+      if(sug) sug.addEventListener('click', async () => {
         try { await PRAMANA_API.post('/api/suggest-source', { query_id: res.query_id }); } catch(e){}
         sug.textContent = '✓ Logged to the corpus-gap register — thank you';
         sug.classList.add('done');
       });
     }
-    convoScroll.scrollTop = 0;
     renderLiveRail(res);
     renderRecents();
 
-    convo.querySelectorAll('.followup[data-q]').forEach(el =>
+    // Listeners are scoped to this turn only, so re-rendering a new answer never
+    // rebinds the earlier turns still on screen.
+    const turn = activeTurn;
+    turn.querySelectorAll('.followup[data-q]').forEach(el =>
       el.addEventListener('click', () => submit(el.getAttribute('data-q'))));
-    convo.querySelectorAll('.pill[data-cite]').forEach(el =>
+    turn.querySelectorAll('.pill[data-cite]').forEach(el =>
       el.addEventListener('click', () => flashRailCard(el.getAttribute('data-cite'))));
-    convo.querySelectorAll('[data-fb]').forEach(el =>
+    turn.querySelectorAll('[data-fb]').forEach(el =>
       el.addEventListener('click', async () => {
         try { await PRAMANA_API.post('/api/feedback',
           { query_id: res.query_id, feedback: el.getAttribute('data-fb') }); } catch(e){ return; }
         el.style.color = 'var(--t1)';
       }));
-    const copyEl = convo.querySelector('[data-copy]');
+    const copyEl = turn.querySelector('[data-copy]');
     if(copyEl) copyEl.addEventListener('click', () => {
       try { navigator.clipboard.writeText(res.answer_text||''); copyEl.style.color='var(--t1)'; } catch(e){}
     });
