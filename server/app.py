@@ -5,8 +5,8 @@ Tiers (Tier 1/corpus was cut from scope):
   Tier 2  — grounded web answer: Anthropic web_search server tool restricted
             to the admin-maintained allowlist (`allowed_domains`), citations
             enforced by the API, groundedness-judged.
-  Tier 3  — general-model fallback, clearly labelled; withheld entirely for
-            high-stakes (dosing/interaction) queries (PRD decision D1→c).
+  Tier 3  — general-model fallback, clearly labelled and marked unverified.
+            Withheld only in grounded-only mode (answers.allow_tier3=false).
 
 Also owns: Google auth + beta allowlist (server-side now), admin config-as-data,
 audit log, query/gap logging, saved conversations, access requests.
@@ -346,9 +346,6 @@ def signout(authorization: str = Header(default="")):
 
 
 # ---------------------------------------------------------------- the router
-
-HIGH_STAKES_RE = re.compile(
-    r"\b(dos(e|es|ing|age)|mg/kg|interaction|contraindicat|overdose|titrat)", re.I)
 
 # The two Tier 2 passes send single-region pools, so the prompt is assembled
 # per pass: telling the model its results are Indian while handing it KDIGO
@@ -923,7 +920,6 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
 
         started = time.time()
         query_id = str(uuid.uuid4())
-        high_stakes = bool(HIGH_STAKES_RE.search(query))
         # Priority order is the curated editorial ranking; batch 1 must carry
         # the apex bodies, so this ORDER BY is load-bearing, not cosmetic.
         rows = q("""SELECT domain, region FROM allowlist_domains
@@ -947,7 +943,7 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         history = _load_history(conversation_id)
         result: dict = {
             "query_id": query_id, "conversation_id": conversation_id,
-            "high_stakes": high_stakes, "sources_searched": sources_searched,
+            "sources_searched": sources_searched,
             "retrieved_at": today(), "citations": [], "followups": [],
             "source_region": None, "pool_outcome": None,
             "indian_citations": None, "intl_citations": None,
@@ -1175,15 +1171,14 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         # A not_found response carries tier: null — no badge, no tier styling.
         if not answered_t2:
             tier3_enabled = cfg("answers.allow_tier3", "true") == "true"
-            if high_stakes or not tier3_enabled:
-                reason = "high_stakes" if high_stakes else "tier3_disabled"
-                fell(3, reason)
-                yield sse("stage", {"label":
-                    "Dosing or interaction question — no answer without a reliable source"
-                    if high_stakes else
-                    "No answer shown without a reliable source"})
+            if not tier3_enabled:
+                # Grounded-only mode: withhold every ungrounded answer. This is
+                # the one remaining withhold — the per-question high-stakes gate
+                # was removed as a broken keyword match.
+                fell(3, "tier3_disabled")
+                yield sse("stage", {"label": "No answer shown without a reliable source"})
                 result.update({
-                    "tier": None, "status": "not_found", "withheld_reason": reason,
+                    "tier": None, "status": "not_found", "withheld_reason": "tier3_disabled",
                     "answer_text": "", "segments": [], "model_used": None,
                 })
             else:
@@ -1253,7 +1248,7 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
              source_region,pool_outcome,indian_citations,intl_citations,created_at)
              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
           (query_id, user["email"], conversation_id, query, result["tier"],
-           result["status"], int(high_stakes), result["latency_ms"],
+           result["status"], 0, result["latency_ms"],
            result.get("model_used"),
            json.dumps(falls) if falls else None,
            result.get("source_region"), result.get("pool_outcome"),

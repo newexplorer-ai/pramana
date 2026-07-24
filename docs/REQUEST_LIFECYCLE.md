@@ -25,7 +25,7 @@ answer appearing, as the system runs today. References name functions in
 ```
 Send
  └─ POST /api/ask  (auth + daily-cap check, then an SSE stream opens)
-     ├─ classify: high-stakes? load allowlist, split IN/INTL, load history
+     ├─ load allowlist, split IN/INTL, load history
      ├─ TIER 2  — search allowlisted sources, one call per batch:
      │     for each batch until one answers:
      │        generate-with-search  →  citations
@@ -34,7 +34,7 @@ Send
      │        pass → Tier 2 answer, stop
      │        fail → log the reason, try next batch
      ├─ TIER 3  — if no batch answered:
-     │        high-stakes OR grounded-only mode → withhold (not_found)
+     │        grounded-only mode → withhold (not_found)
      │        else → general-model answer, no citations (unverified)
      ├─ invariant guard  (never show an empty/uncited answer behind a badge)
      ├─ persist: query_logs + turns
@@ -78,9 +78,6 @@ Then the SSE stream opens and everything below runs inside it.
 ## 3. Request setup (inside `stream()`)
 
 - `query_id` — a fresh UUID for this single turn.
-- **High-stakes flag:** `HIGH_STAKES_RE.search(query)` — a regex
-  matching `dose|dosing|dosage|mg/kg|interaction|contraindicat|overdose|titrat`.
-  This one boolean decides later whether an ungrounded answer may ever be shown.
 - **Allowlist load:** all `enabled=1` domains, ordered by
   `priority, rowid` (the curated editorial ranking), split into
   `by_region["IN"]` and `by_region["INTL"]`.
@@ -222,11 +219,10 @@ queryable signal instead of a silent international-only answer.
 
 Reached only if **no** Tier 2 batch produced a served answer.
 
-- **Withhold:** if the query is **high-stakes**, *or*
-  `answers.allow_tier3` is off → no answer. `tier=null`, `status=not_found`.
-  The clinician sees *"Dosing or interaction question — no answer without a
-  reliable source"*. This is the deliberate safety stance: never give an
-  ungrounded dosing/interaction answer.
+- **Withhold:** only if `answers.allow_tier3` is off (grounded-only mode) →
+  no answer. `tier=null`, `status=not_found`, the clinician sees *"No answer
+  shown without a reliable source"*. There is no longer a per-question
+  high-stakes withhold (see [Removed](#removed)).
 - **General-model answer:** otherwise, one plain model call with
   `TIER3_SYSTEM` (which forbids inventing citations, forbids specific doses, and
   requires a hedged "Generally…" opener stating it may not match Indian
@@ -244,7 +240,7 @@ it" structurally impossible, independent of anything the model or judge did.
 
 ## 7. Persist + respond
 
-- **`query_logs`** — one row: tier, status, high-stakes, latency, model used,
+- **`query_logs`** — one row: tier, status, latency, model used,
   `source_region`, and the full `fallthrough` JSON (every batch that failed and
   why). In dual mode it also carries `pool_outcome` and the per-pool
   `indian_citations` / `intl_citations` counts. This is what drives the admin
@@ -265,7 +261,6 @@ seconds.
 |---|---|---|
 | Tier 2 served | *Referenced from reliable Indian and international sources* | citations as pills + a sources rail with per-source `IN`/`INTL` tags |
 | Tier 3 served | *General model* | "not grounded in medical literature… verify before clinical use" |
-| Withheld (high-stakes) | *Not found* | dosing/interaction questions need a reliable source |
 | Not found (all failed) | *Not found* | the sources that were checked are listed |
 
 ---
@@ -281,7 +276,7 @@ seconds.
 - **Each failed batch adds** one generate-with-search (+ a judge call if it got
   as far as the judge).
 - **Tier 3 answer:** the Tier 2 attempts **plus** one more general-model call.
-- **Withheld / not found:** the Tier 2 attempts only — no generation beyond them.
+- **Not found / withheld (grounded-only mode):** the Tier 2 attempts only — no generation beyond them.
 
 **In `dual` mode**, a `both`-plan question costs a classifier call + two
 searches (parallel, so ~one search of *latency* but ~2× search *spend*) +
@@ -307,22 +302,33 @@ These are live as of this writing and documented here so the trace is honest:
    checks it, and the model will still produce a personalised care plan
    ("what patient X should do") when the question invites one. The judge does
    not test for this.
-2. **High-stakes detection is a 5-keyword regex.** It misses paraphrases
-   ("how much for a 3-year-old", "is this safe in pregnancy", "can I combine
-   X and Y"), which then reach an ungrounded Tier 3 answer instead of being
-   withheld.
-3. **Daily-cap window is wrong.** `created_at > datetime('now','-1 day')`
+2. **Daily-cap window is wrong.** `created_at > datetime('now','-1 day')`
    compares an ISO-8601 timestamp (with a `T`) against a space-separated
    SQLite datetime; on the boundary date the comparison mis-sorts and counts
    some queries older than 24 h, capping heavy users a few hours early.
-4. **Sessions never expire.** `auth_sessions.created_at` is recorded but never
+3. **Sessions never expire.** `auth_sessions.created_at` is recorded but never
    read; a token is valid until the user is disabled.
-5. **PHI is accepted and stored in clear text.** A query naming a patient is
+4. **PHI is accepted and stored in clear text.** A query naming a patient is
    written verbatim to `query_logs`, `turns`, and the `conversations` title,
    and sent to the model provider. No detection, redaction, or retention limit.
-6. **The Tier 2 badge is static.** It says "Indian and international sources"
+5. **The Tier 2 badge is static.** It says "Indian and international sources"
    even when every citation is international; the per-source rail tags carry the
    truth, the badge does not.
+
+---
+
+## Removed {#removed}
+
+**Per-question high-stakes withhold** (formerly a `HIGH_STAKES_RE` keyword
+regex). It flagged dosing/interaction questions and withheld the Tier 3
+fallback for them. Removed deliberately: the regex only matched literal words
+(`dose`, `mg/kg`, `titrate`…) and silently missed every paraphrase — "how is
+this treated", "how much for a child", "is it safe in pregnancy" — so it gave
+the *appearance* of a safety gate while catching only a fraction of what it
+named. A dosing question now gets the same Tier 3 general-model answer as any
+other ungrounded question, carrying the "not grounded — verify before clinical
+use" warning. The blanket withhold still exists via **grounded-only mode**
+(`answers.allow_tier3 = false`), which withholds *every* ungrounded answer.
 
 ---
 

@@ -2,7 +2,7 @@
    Pramana — desktop app controller
    Canvases: App Ask · App Conversation (Tier 1/2/3).
    Views: ask · conversation · library · sources.
-   PRD decisions applied: D1(c) high-stakes withhold, D2 library
+   PRD decisions applied: D2 library
    = saved conversations, D3/D4 single model chip, D5 follow-ups
    Tier 1 only.
    ============================================================ */
@@ -203,14 +203,14 @@
     convoScroll.classList.add('t3-bg');
     const withheld = !!a.notFound;
     setStrip(withheld
-      ? `${svg(I.shield,{w:13,stroke:'#5a4b76'})}<span>High-stakes query — unverified answers are withheld</span>`
+      ? `${svg(I.shield,{w:13,stroke:'#5a4b76'})}<span>No grounded source — no unverified answer shown</span>`
       : `${sparkle('#6a5a86',13)}<span>General model answer · no Indian-literature citation</span>`);
 
     convo.innerHTML = `
       <div class="query-echo" style="background:#fff;"><p>${esc(a.query)}</p></div>
       <div class="answer-head" style="margin-top:16px;">
         <div class="answer-meta">
-          <span class="badge badge-t3">${sparkle('#6a5a86',11)}${withheld?'Not found · high-stakes':'General model'}</span>
+          <span class="badge badge-t3">${sparkle('#6a5a86',11)}${withheld?'Not found':'General model'}</span>
         </div>
         <div class="finished">Finished thinking <span style="font-size:9px;">▾</span></div>
       </div>
@@ -511,9 +511,8 @@
     setStrip(null);
     convoScroll.classList.remove('t3-bg');
     const why = {
-      high_stakes: 'This is a dosing or interaction question. Pramana only answers those from a grounded Indian source, so no unverified answer is shown.',
       tier3_disabled: 'Pramana is in grounded-only mode, so no unverified general-model answer is shown.',
-      all_tiers_failed: 'The allowlisted Indian sources did not substantively answer this question, and no unverified answer is being shown in its place.',
+      all_tiers_failed: 'The allowlisted sources did not substantively answer this question, and no unverified answer is being shown in its place.',
     }[res.withheld_reason] || 'No source substantively answered this question.';
 
     convo.innerHTML = `
@@ -687,15 +686,15 @@
         <div class="snapshot">${svg(I.clock,{w:11})}Retrieved from allowlisted domains on ${esc(res.retrieved_at)} · web content is a snapshot we do not control</div>
         <div style="height:20px;"></div>`;
     } else {
+      // Live Tier 3: an unverified general-model answer. A fully withheld turn
+      // (tier null) is handled by renderNotFound above and never reaches here.
       convoScroll.classList.add('t3-bg');
-      setStrip(withheld
-        ? `${svg(I.shield,{w:13,stroke:'#5a4b76'})}<span>High-stakes query — unverified answers are withheld</span>`
-        : `${sparkle('#6a5a86',13)}<span>General model answer · no Indian-literature citation</span>`);
+      setStrip(`${sparkle('#6a5a86',13)}<span>General model answer · no Indian-literature citation</span>`);
       convo.innerHTML = `
         <div class="query-echo" style="background:#fff;"><p>${esc(query)}</p></div>
         <div class="answer-head" style="margin-top:16px;">
           <div class="answer-meta">
-            <span class="badge badge-t3">${sparkle('#6a5a86',11)}${withheld?'Not found · high-stakes':'General model'}</span>
+            <span class="badge badge-t3">${sparkle('#6a5a86',11)}General model</span>
           </div>
         </div>
         <p class="t3-prose">${esc(res.answer_text||'').replace(/\n/g,'<br>')}</p>

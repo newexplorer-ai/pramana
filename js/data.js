@@ -162,24 +162,16 @@ const ANSWERS = {
     sourcesChecked:['ICMR corpus','MoHFW STG','icmr.gov.in','nmji.in','ijmr.org.in'],
   },
 
-  // D1 resolution (c): high-stakes queries with no grounded source get an
-  // honest "not found" — never an unverified general answer.
+  // No grounded source and grounded-only mode: an honest "not found".
   notfound:{
     tier:3,
     notFound:true,
     query:'',
-    prose:'<b>Not found in the indexed Indian literature.</b> This looks like a dosing or interaction question, so no unverified general-model answer is shown — for high-stakes queries Pramana only answers from a grounded Indian source.',
-    warn:'This query was logged to the corpus-gap register. When an Indian source covering it is added to the corpus, questions like this will return a grounded, cited answer.',
+    prose:'<b>Not found in the allowlisted sources.</b> No reliable source substantively answered this question, so no unverified general-model answer is shown in its place.',
+    warn:'This query was logged to the corpus-gap register. When a source covering it is added, questions like this will return a grounded, cited answer.',
     sourcesChecked:['ICMR corpus','MoHFW STG','NLEM','icmr.gov.in','nmji.in','ijmr.org.in'],
   },
 };
-
-/* High-stakes guard (PRD D1 → option c): dosing/interaction queries must
-   never receive an unverified Tier 3 answer. Conservative lexicon match —
-   the production version is a server-side classifier. */
-function isHighStakes(q){
-  return /\b(dos(e|es|ing|age)|mg\/kg|interaction|contraindicat|overdose|titrat)/i.test(q);
-}
 
 /* Corpus catalogue for the user-facing Sources screen (PRD §4.4). */
 const CORPUS_SOURCES = [
@@ -211,9 +203,7 @@ function routeQuery(raw){
   if(/diabet|metformin|first-line therapy|nlem dosing/.test(q)) return 'diabetes';
   if(/dengue|fluid|crystalloid|advisory|icmr guideline/.test(q)) return 'dengue';
   if(/crohn|refractory|biologic|infliximab|adalimumab|ustekinumab/.test(q)) return 'crohns';
-  // No grounded source: high-stakes queries are withheld (D1 → c),
-  // everything else honestly falls through to the unverified tier.
-  if(isHighStakes(q)) return 'notfound';
+  // No grounded source → the unverified general-model tier.
   return 'generic';
 }
 
