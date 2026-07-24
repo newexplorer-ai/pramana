@@ -511,7 +511,6 @@
     setStrip(null);
     convoScroll.classList.remove('t3-bg');
     const why = {
-      tier3_disabled: 'Pramana is in grounded-only mode, so no unverified general-model answer is shown.',
       all_tiers_failed: 'The allowlisted sources did not substantively answer this question, and no unverified answer is being shown in its place.',
     }[res.withheld_reason] || 'No source substantively answered this question.';
 

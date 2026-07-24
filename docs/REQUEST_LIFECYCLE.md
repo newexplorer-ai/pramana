@@ -34,8 +34,8 @@ Send
      │        pass → Tier 2 answer, stop
      │        fail → log the reason, try next batch
      ├─ TIER 3  — if no batch answered:
-     │        grounded-only mode → withhold (not_found)
-     │        else → general-model answer, no citations (unverified)
+     │        general-model answer, no citations (unverified)
+     │        (only not_found if Tier 3 itself returns nothing)
      ├─ invariant guard  (never show an empty/uncited answer behind a badge)
      ├─ persist: query_logs + turns
      └─ emit one `result` event
@@ -215,21 +215,20 @@ The per-pool citation counts (`indian_citations`, `intl_citations`) are logged
 alongside, which is what turns a thin-Indian-coverage question into a visible,
 queryable signal instead of a silent international-only answer.
 
-## 5. Tier 3 — fallback or refusal
+## 5. Tier 3 — general-model fallback
 
-Reached only if **no** Tier 2 batch produced a served answer.
+Reached whenever **no** Tier 2 batch produced a served answer. There is no
+upfront withhold: the general model is *always* the fallback (see
+[Removed](#removed)).
 
-- **Withhold:** only if `answers.allow_tier3` is off (grounded-only mode) →
-  no answer. `tier=null`, `status=not_found`, the clinician sees *"No answer
-  shown without a reliable source"*. There is no longer a per-question
-  high-stakes withhold (see [Removed](#removed)).
-- **General-model answer:** otherwise, one plain model call with
-  `TIER3_SYSTEM` (which forbids inventing citations, forbids specific doses, and
-  requires a hedged "Generally…" opener stating it may not match Indian
-  guidance). Result: `tier=3`, `status=unverified`, **no citations**. The UI
-  badges it *General model* with an explicit "not grounded, verify before use"
-  warning.
-- If Tier 3 errors or returns empty → `not_found`.
+- **General-model answer:** one plain model call with `TIER3_SYSTEM` (which
+  forbids inventing citations, forbids specific doses, and requires a hedged
+  "Generally…" opener stating it may not match Indian guidance). Result:
+  `tier=3`, `status=unverified`, **no citations**. The UI badges it *General
+  model* with an explicit "not grounded, verify before use" warning.
+- **`not_found`** is reached only when Tier 3 *itself* produces nothing — the
+  provider refuses, errors, or returns empty. It is no longer a chosen policy;
+  it is only a genuine failure to answer.
 
 ## 6. Invariant guard
 
@@ -276,7 +275,7 @@ seconds.
 - **Each failed batch adds** one generate-with-search (+ a judge call if it got
   as far as the judge).
 - **Tier 3 answer:** the Tier 2 attempts **plus** one more general-model call.
-- **Not found / withheld (grounded-only mode):** the Tier 2 attempts only — no generation beyond them.
+- **Not found:** the Tier 2 attempts plus the Tier 3 call that came back empty.
 
 **In `dual` mode**, a `both`-plan question costs a classifier call + two
 searches (parallel, so ~one search of *latency* but ~2× search *spend*) +
@@ -327,8 +326,14 @@ this treated", "how much for a child", "is it safe in pregnancy" — so it gave
 the *appearance* of a safety gate while catching only a fraction of what it
 named. A dosing question now gets the same Tier 3 general-model answer as any
 other ungrounded question, carrying the "not grounded — verify before clinical
-use" warning. The blanket withhold still exists via **grounded-only mode**
-(`answers.allow_tier3 = false`), which withholds *every* ungrounded answer.
+use" warning.
+
+**Grounded-only mode** (`answers.allow_tier3`), the admin switch that withheld
+*every* ungrounded answer. Removed too: the product now always attempts an
+answer — grounded when it can, general-model-with-warning otherwise — and only
+returns `not_found` when even the general model comes back empty. There is no
+remaining way to make the product refuse a question upfront; the config key is
+deleted on boot and the admin switch is gone.
 
 ---
 

@@ -162,7 +162,7 @@ const ANSWERS = {
     sourcesChecked:['ICMR corpus','MoHFW STG','icmr.gov.in','nmji.in','ijmr.org.in'],
   },
 
-  // No grounded source and grounded-only mode: an honest "not found".
+  // No source substantively answered and the general model produced nothing.
   notfound:{
     tier:3,
     notFound:true,

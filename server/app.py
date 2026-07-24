@@ -6,7 +6,7 @@ Tiers (Tier 1/corpus was cut from scope):
             to the admin-maintained allowlist (`allowed_domains`), citations
             enforced by the API, groundedness-judged.
   Tier 3  — general-model fallback, clearly labelled and marked unverified.
-            Withheld only in grounded-only mode (answers.allow_tier3=false).
+            Always the fallback when Tier 2 finds no grounded answer.
 
 Also owns: Google auth + beta allowlist (server-side now), admin config-as-data,
 audit log, query/gap logging, saved conversations, access requests.
@@ -158,10 +158,6 @@ SEED_CONFIG = [
      "Dual mode: max international domains in the international search call.", 0),
     ("search.dual_classifier", "true", "true",
      "Dual mode: run the retrieval-plan classifier. Off = always search both pools.", 0),
-    # Safety switch: when false, unverified general-model answers are never
-    # served — every ungrounded question returns an honest not-found instead.
-    ("answers.allow_tier3", "true", "true",
-     "Serve unverified Tier 3 answers. Off = grounded answers only.", 0),
     ("cost.daily_user_cap", "40", "40", "Per-clinician query cap per day.", 0),
     ("context.max_turns", "6", "6", "Conversation depth resent per request.", 0),
 ]
@@ -226,9 +222,12 @@ def init_db() -> None:
                critical=excluded.critical""",
           (key, value, default, desc, critical, now()))
     # Retired keys: per-role model selection was replaced by a single
-    # provider switch; embeddings belonged to the cut Tier 1 corpus path.
+    # provider switch; embeddings belonged to the cut Tier 1 corpus path;
+    # answers.allow_tier3 (grounded-only mode) was removed — the general model
+    # is now always the fallback, so there is no upfront withhold to toggle.
     q("""DELETE FROM app_config WHERE key LIKE 'embedding%'
-         OR key IN ('model.generation','model.tier3','model.judge')""")
+         OR key IN ('model.generation','model.tier3','model.judge',
+                    'answers.allow_tier3')""")
     if not q("SELECT 1 FROM access_requests LIMIT 1"):
         q("INSERT INTO access_requests(name,email,reg,council,specialty,institution,status,created_at) "
           "VALUES(?,?,?,?,?,?, 'pending', ?)",
@@ -1170,60 +1169,51 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         # ---------- Tier 3 / not found ----------
         # A not_found response carries tier: null — no badge, no tier styling.
         if not answered_t2:
-            tier3_enabled = cfg("answers.allow_tier3", "true") == "true"
-            if not tier3_enabled:
-                # Grounded-only mode: withhold every ungrounded answer. This is
-                # the one remaining withhold — the per-question high-stakes gate
-                # was removed as a broken keyword match.
-                fell(3, "tier3_disabled")
-                yield sse("stage", {"label": "No answer shown without a reliable source"})
+            # No grounded answer → always fall back to the general model. There
+            # is no upfront withhold: the only not_found left is when Tier 3
+            # itself returns nothing (refusal, error, or empty).
+            t3_model, t3_prov = model, prov
+            yield sse("stage", {"label": "No reliable source found — "
+                                         "answering from general knowledge"})
+            try:
+                t3_client = _client(t3_model)
+                if t3_prov == "openai":
+                    plain = _openai_plain(t3_client, t3_model, TIER3_SYSTEM, msgs)
+                    used = t3_model
+                else:
+                    t3 = t3_client.messages.create(
+                        model=t3_model, max_tokens=1024,
+                        thinking={"type": "adaptive"},
+                        output_config={"effort": effort},
+                        system=[{"type": "text", "text": TIER3_SYSTEM,
+                                 "cache_control": {"type": "ephemeral"}}],
+                        messages=msgs,
+                    )
+                    used = t3.model
+                    if t3.stop_reason == "refusal":
+                        fell(3, "provider_refusal")
+                        plain = ""       # falls through to not_found below
+                    else:
+                        plain = "\n".join(b.text for b in t3.content if b.type == "text")
+                plain, followups = _parse_followups(plain)
+            except Exception as e:
+                # Tier 3 is the last tier: its failure means not_found,
+                # not an error page.
+                fell(3, f"generation_failed:{type(e).__name__}")
+                plain, followups, used = "", [], None
+            if plain.strip():
                 result.update({
-                    "tier": None, "status": "not_found", "withheld_reason": "tier3_disabled",
-                    "answer_text": "", "segments": [], "model_used": None,
+                    "tier": 3, "status": "unverified", "answer_text": plain,
+                    "segments": [{"text": plain, "citations": []}],
+                    "followups": followups, "model_used": used,
                 })
             else:
-                t3_model, t3_prov = model, prov
-                yield sse("stage", {"label": "No reliable source found — "
-                                             "answering from general knowledge"})
-                try:
-                    t3_client = _client(t3_model)
-                    if t3_prov == "openai":
-                        plain = _openai_plain(t3_client, t3_model, TIER3_SYSTEM, msgs)
-                        used = t3_model
-                    else:
-                        t3 = t3_client.messages.create(
-                            model=t3_model, max_tokens=1024,
-                            thinking={"type": "adaptive"},
-                            output_config={"effort": effort},
-                            system=[{"type": "text", "text": TIER3_SYSTEM,
-                                     "cache_control": {"type": "ephemeral"}}],
-                            messages=msgs,
-                        )
-                        used = t3.model
-                        if t3.stop_reason == "refusal":
-                            fell(3, "provider_refusal")
-                            plain = ""       # falls through to not_found below
-                        else:
-                            plain = "\n".join(b.text for b in t3.content if b.type == "text")
-                    plain, followups = _parse_followups(plain)
-                except Exception as e:
-                    # Tier 3 is the last tier: its failure means not_found,
-                    # not an error page.
-                    fell(3, f"generation_failed:{type(e).__name__}")
-                    plain, followups, used = "", [], None
-                if plain.strip():
-                    result.update({
-                        "tier": 3, "status": "unverified", "answer_text": plain,
-                        "segments": [{"text": plain, "citations": []}],
-                        "followups": followups, "model_used": used,
-                    })
-                else:
-                    fell(3, "empty_answer")
-                    result.update({
-                        "tier": None, "status": "not_found",
-                        "withheld_reason": "all_tiers_failed",
-                        "answer_text": "", "segments": [], "model_used": None,
-                    })
+                fell(3, "empty_answer")
+                result.update({
+                    "tier": None, "status": "not_found",
+                    "withheld_reason": "all_tiers_failed",
+                    "answer_text": "", "segments": [], "model_used": None,
+                })
 
         result["latency_ms"] = int((time.time() - started) * 1000)
 
