@@ -30,7 +30,6 @@ from fastapi.testclient import TestClient                 # noqa: E402
 
 client = TestClient(A.app)
 FAILURES: list[str] = []
-REAL_VERDICT = A._verdict          # kept before the stubs replace it
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -67,13 +66,19 @@ def ask(query: str) -> dict:
         return result
 
 
-def stub(*, text: str, citations: list[dict], answered: bool,
+SENTINEL = "NO_SUBSTANTIVE_ANSWER"
+
+
+def stub(*, text: str, citations: list[dict], answered: bool = True,
          grounded: bool = True, verdict_ok: bool = True,
          t3_text: str = "Generally, this is a fallback answer."):
-    """Replace the provider calls with deterministic fakes."""
-    A._grounded_answer = lambda *a, **k: (text, citations, "stub-model", False)
-    A._verdict = lambda *a, **k: {"answered": answered, "grounded": grounded,
-                                  "ok": verdict_ok}
+    """Deterministic provider fakes. The groundedness judge is gone, so a
+    grounded answer is served whenever it has >= min_chunks citations and is
+    not the NO_SUBSTANTIVE_ANSWER sentinel. `answered=False` now emits that
+    sentinel (the only refusal signal left); grounded/verdict_ok are accepted
+    for legacy call sites but no longer gate anything."""
+    grounded_text = text if answered else SENTINEL
+    A._grounded_answer = lambda *a, **k: (grounded_text, citations, "stub-model", False)
     A._openai_plain = lambda *a, **k: t3_text
     A._client = lambda model: object()
 
@@ -101,25 +106,24 @@ CITE = [{"cited_text": "Metformin is first line.", "url": "https://icmr.gov.in/a
 print("\nRouter regression tests\n" + "=" * 60)
 
 # ---------------------------------------------------------------- test 1
-# Sources retrieved but irrelevant: the model's prose is a refusal. The
-# router must read answered:false and fall through — no Tier 2 emitted.
-print("\n1. Irrelevant sources → answered:false → falls through, no Tier 2")
-stub(text="The restricted search did not retrieve any current ICMR advisory "
-          "specifying fluid management protocols.",
-     citations=CITE, answered=False)
+# The model emits the NO_SUBSTANTIVE_ANSWER sentinel: with the judge gone,
+# this sentinel is the only refusal signal, and it must fall through — no
+# Tier 2 emitted, sentinel text never shown.
+print("\n1. Sentinel refusal → falls through, no Tier 2, sentinel never shown")
+stub(text="", citations=CITE, answered=False)   # answered=False emits the sentinel
 r1 = ask("Current ICMR advisory on dengue fluid management?")
 check("tier is not 2", r1["tier"] != 2, f"tier={r1['tier']}")
 check("no grounded status", r1["status"] != "answered", f"status={r1['status']}")
-check("refusal prose never served as the answer",
-      "did not retrieve" not in (r1.get("answer_text") or ""))
+check("sentinel never served as the answer",
+      SENTINEL not in (r1.get("answer_text") or ""))
 check("fall-through logged with tier+reason",
-      any(f["tier"] == 2 and f["reason"].startswith("not_answered")
+      any(f["tier"] == 2 and f["reason"].startswith("no_substantive_answer")
           for f in (r1.get("fallthrough") or [])),
       str(r1.get("fallthrough")))
 reasons1 = {f["reason"] for f in (r1.get("fallthrough") or [])}
 check("both regions attempted before falling through",
-      any(r.startswith("not_answered:IN") for r in reasons1)
-      and any(r.startswith("not_answered:INTL") for r in reasons1),
+      any(r.startswith("no_substantive_answer:IN") for r in reasons1)
+      and any(r.startswith("no_substantive_answer:INTL") for r in reasons1),
       str(reasons1))
 
 # ---------------------------------------------------------------- test 2
@@ -146,31 +150,28 @@ check("sources_searched populated", len(r3.get("sources_searched") or []) > 0,
 check("no synthesized answer text", not (r3.get("answer_text") or "").strip())
 
 # ---------------------------------------------------------------- test 4
-# THE regression guard: answered:false must never serialize with a tier.
-print("\n4. Regression guard: answered:false never serialized with a tier")
+# Guard: a sentinel/empty answer must never serialize with a tier.
+print("\n4. Sentinel or empty answer never serialized with a tier")
 cases = [
-    ("refusal prose + citations", "The search did not find anything relevant.", CITE, False),
-    ("empty text + citations", "", CITE, False),
-    ("refusal + single citation", "No guidance located.", CITE[:1], False),
+    ("sentinel + citations", SENTINEL, CITE),
+    ("sentinel + single citation", SENTINEL, CITE[:1]),
 ]
-for label, text, cites, answered in cases:
-    stub(text=text, citations=cites, answered=answered, t3_text="")
+for label, text, cites in cases:
+    stub(text=text, citations=cites, t3_text="")   # answered defaults True; text IS sentinel
     rr = ask(f"probe: {label}")
     ok = rr["tier"] is None and rr["status"] == "not_found"
     check(f"{label} → tier null / not_found", ok,
           f"tier={rr['tier']} status={rr['status']}")
 
-# verdict unavailable must also never be served behind a badge
-stub(text="Looks grounded but unverifiable.", citations=CITE,
-     answered=True, verdict_ok=False, t3_text="")
-r4b = ask("verdict unavailable probe")
-check("verdict failure → never Tier 2", r4b["tier"] != 2, f"tier={r4b['tier']}")
-
-# not_grounded must also fall through
-stub(text="Claims not supported by sources.", citations=CITE,
-     answered=True, grounded=False, t3_text="")
-r4c = ask("ungrounded probe")
-check("not_grounded → never Tier 2", r4c["tier"] != 2, f"tier={r4c['tier']}")
+# DOCUMENTED CONSEQUENCE of removing the judge: a plausible-looking but
+# ungrounded answer WITH enough citations is now SERVED as Tier 2. Previously
+# the groundedness judge would have caught this. This test pins the new,
+# weaker behaviour so a future change to it is deliberate, not accidental.
+stub(text="Claims that the citations do not actually support.", citations=CITE)
+r4b = ask("ungrounded-but-cited probe")
+check("no judge: a cited answer is served even if ungrounded",
+      r4b["tier"] == 2 and r4b["status"] == "answered",
+      f"tier={r4b['tier']} status={r4b['status']}")
 
 # ---------------------------------------------------------------- test 5
 # The observed case: IDH / AV-thrombosis. Must be Tier 3 (unverified) or
@@ -241,14 +242,12 @@ def region_stub(*, indian_answers: bool):
                         for d in pool)
         seen.append("IN" if is_indian else "INTL")
         if is_indian:
-            return (("An Indian-grounded answer." if indian_answers else
-                     "Indian sources do not address this."),
+            # A non-answer is now the sentinel, not prose — there is no judge.
+            return (("An Indian-grounded answer." if indian_answers else SENTINEL),
                     CITE, "stub-model", False)
         return ("An international-grounded answer.", INTL_CITE, "stub-model", False)
 
     A._grounded_answer = _ga
-    A._verdict = lambda query, answer, cites: {
-        "answered": "do not address" not in answer, "grounded": True, "ok": True}
     return seen
 
 seen = region_stub(indian_answers=True)
@@ -297,44 +296,21 @@ check("source_region persisted to query_logs",
       "no INTL row logged")
 
 # ---------------------------------------------------------------- test 8
-# Provenance: a dosing/NLEM/programme claim resting on international
-# sources must be refused with the same severity as an ungrounded one.
-print("\n8. Provenance violation refused like an ungrounded answer")
+# DOCUMENTED CONSEQUENCE: provenance enforcement was the judge's job, so it is
+# gone too. A dosing answer resting on an international source is now served.
+# The generation prompt still ASKS the model not to do this, but nothing
+# enforces it. This test pins the new behaviour.
+print("\n8. No judge: a dosing answer on international sources is now served")
 A._grounded_answer = lambda *a, **k: (
-    "Generally the dose is 5 mg/kg daily.", list(CITE), "stub-model", False)
-A._verdict = lambda *a, **k: {"answered": True, "grounded": True,
-                              "provenance_ok": False, "ok": True}
+    "Generally the dose is 5 mg/kg daily.",
+    [{"cited_text": "dose info", "url": "https://kdigo.org/d",
+      "title": "KDIGO", "domain": "kdigo.org"},
+     {"cited_text": "more", "url": "https://nice.org.uk/d",
+      "title": "NICE", "domain": "nice.org.uk"}], "stub-model", False)
 A._openai_plain = lambda *a, **k: ""
 r8 = ask("What is the dose in renal impairment?")
-check("provenance violation → never Tier 2", r8["tier"] != 2, f"tier={r8['tier']}")
-check("provenance fall-through logged",
-      any(f["reason"].startswith("provenance_violation")
-          for f in (r8.get("fallthrough") or [])),
-      str(r8.get("fallthrough")))
-
-# A judge that omits provenance_ok must not refuse every answer — defaulting
-# the absent key to False would silently kill the whole Indian pass.
-class _JudgeResp:
-    class _B:
-        type = "text"
-        text = '{"answered": true, "grounded": true}'
-    content = [_B()]
-
-
-class _JudgeClient:
-    class messages:
-        @staticmethod
-        def create(**k):
-            return _JudgeResp()
-
-
-A._client = lambda model: _JudgeClient()
-v = REAL_VERDICT("q", "a", [{"cited_text": "x", "domain": "icmr.gov.in",
-                             "region": "IN"}])
-check("absent provenance_ok defaults to permissive",
-      v["provenance_ok"] is True and v["ok"] is True, str(v))
-check("no citations → provenance_ok is False",
-      REAL_VERDICT("q", "a", [])["provenance_ok"] is False)
+check("dosing-on-international answer is now served (no provenance gate)",
+      r8["tier"] == 2, f"tier={r8['tier']}")
 
 # ---------------------------------------------------------------- test 9
 # Snapshot: the pool sent and the prompt describing it must agree. This is
@@ -347,12 +323,10 @@ calls: list[tuple[str, list]] = []
 
 def _capture(model, system, msgs, pool, effort, max_uses):
     calls.append((system, list(pool)))
-    return ("Indian sources do not address this.", CITE, "stub-model", False)
+    return (SENTINEL, CITE, "stub-model", False)   # sentinel → exhaust both passes
 
 
 A._grounded_answer = _capture
-A._verdict = lambda q, a, c: {"answered": False, "grounded": True,
-                              "provenance_ok": True, "ok": True}
 A._openai_plain = lambda *a, **k: ""
 calls.clear()
 ask("A question that exhausts both passes?")
@@ -418,22 +392,6 @@ check("blockquotes survive the stripper", "> Low-flow" in md, md[:120])
 check("numbered steps survive the stripper", "1. Flow falls." in md, md[:120])
 check("markdown links are still stripped", "https://x.example" not in md, md[:120])
 
-# the verdict must see region tags, not bare domains
-seen_prompt: list[str] = []
-A._grounded_answer = lambda *a, **k: ("An answer.", list(INTL_CITE), "m", False)
-
-
-def _spy_verdict(question, answer, citations):
-    seen_prompt.append("".join(
-        f"[{c.get('region')}]" for c in citations))
-    return {"answered": True, "grounded": True, "provenance_ok": True, "ok": True}
-
-
-A._verdict = _spy_verdict
-ask("tagging probe")
-check("citations tagged before the verdict call",
-      seen_prompt and "[None]" not in seen_prompt[0], str(seen_prompt))
-
 # --------------------------------------------------------------- test 10
 # Mixed mode: both regions in one call, Indian slots first. Precedence is
 # no longer structural, so the badge must come from the citations used.
@@ -450,8 +408,6 @@ def _mcapture(model, system, msgs, pool, effort, max_uses):
 
 
 A._grounded_answer = _mcapture
-A._verdict = lambda q, a, c: {"answered": False, "grounded": True,
-                              "provenance_ok": True, "ok": True}
 A._openai_plain = lambda *a, **k: ""
 mcalls.clear()
 ask("mixed mode probe")
@@ -482,8 +438,6 @@ MIX = [{"cited_text": "ICMR says.", "url": "https://icmr.gov.in/a",
         "title": "KDIGO", "domain": "kdigo.org"}]
 A._grounded_answer = lambda *a, **k: ("A mixed answer.", [dict(c) for c in MIX],
                                       "stub-model", False)
-A._verdict = lambda q, a, c: {"answered": True, "grounded": True,
-                              "provenance_ok": True, "ok": True}
 r10 = ask("mixed citation probe")
 check("mixed citations → source_region MIXED",
       r10.get("source_region") == "MIXED", str(r10.get("source_region")))
@@ -534,8 +488,6 @@ live_in = {r["domain"] for r in A.q(
     "SELECT domain FROM allowlist_domains WHERE enabled=1 AND region='IN'")}
 
 A._retrieval_plan = lambda q: "both"
-A._verdict = lambda q, a, c: {"answered": True, "grounded": True,
-                              "provenance_ok": True, "ok": True}
 compose_seen = {}
 
 
@@ -621,19 +573,20 @@ r11d = ask("dual international_only plan probe")
 check("international_only plan searches only the international pool",
       searched_pools == ["INTL"], str(searched_pools))
 
-# 11e — provenance violation on a composed answer is refused like Tier 2
+# 11e — a composed answer that is the sentinel/empty falls through (the only
+# refusal guard left in the dual path)
 A._retrieval_plan = lambda q: "both"
 A._grounded_answer = _dual_search_factory(list(CITE), list(INTL_CITE))
-A._verdict = lambda q, a, c: {"answered": True, "grounded": True,
-                              "provenance_ok": False, "ok": True}
-r11e = ask("dual provenance-violation probe")
-check("composed answer failing provenance → never Tier 2",
+A._compose = lambda q, i, n: (SENTINEL, list(i[1]) + list(n[1]), [], "stub-compose")
+r11e = ask("dual sentinel-compose probe")
+check("composed sentinel answer → never Tier 2",
       r11e["tier"] != 2, f"tier={r11e['tier']}")
-check("provenance fall-through logged for dual",
-      any("provenance_violation" in f["reason"] for f in (r11e.get("fallthrough") or [])),
+check("no_substantive_answer logged for dual",
+      any("no_substantive_answer:dual" in f["reason"]
+          for f in (r11e.get("fallthrough") or [])),
       str(r11e.get("fallthrough")))
+A._compose = _spy_compose
 
-A._verdict = REAL_VERDICT
 A.q("UPDATE app_config SET value='indian_first' WHERE key='search.region_mode'")
 
 print("\n" + "=" * 60)

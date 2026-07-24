@@ -47,7 +47,6 @@
       { key:'provider.active',        value:'anthropic',         def:'anthropic',       desc:'Which model provider answers questions.',  who:'system', when:'20 Jul 2026', critical:true  },
       { key:'generation.effort',      value:'medium',            def:'medium',          desc:'Effort level for generation.',             who:'system', when:'20 Jul 2026', critical:false },
       { key:'websearch.max_uses',     value:'3',                 def:'3',               desc:'Web-search cap per query.',                who:'system', when:'20 Jul 2026', critical:false },
-      { key:'groundedness.judge',     value:'true',              def:'true',            desc:'Run the judge model on grounded answers.', who:'system', when:'20 Jul 2026', critical:false },
       { key:'cost.daily_user_cap',    value:'40',                def:'40',              desc:'Per-clinician query cap per day.',         who:'system', when:'20 Jul 2026', critical:false },
       { key:'context.max_turns',      value:'6',                 def:'6',               desc:'Conversation depth resent per request.',   who:'system', when:'default',     critical:false },
     ],
@@ -540,12 +539,7 @@
   }
 
   /* ---------- safety switches (boolean config, surfaced prominently) ---------- */
-  const SWITCHES = [
-    { key:'groundedness.judge', label:'Groundedness judge',
-      on:'A second model verifies that cited passages support each claim before an answer is served.',
-      off:'<b>Judge disabled.</b> Answers are served on citation presence alone — “cited but wrong” can slip through.',
-      danger:true },
-  ];
+  const SWITCHES = [];
 
   function renderSwitches(){
     const rows = SWITCHES.map(s => {

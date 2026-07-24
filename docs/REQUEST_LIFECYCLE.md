@@ -5,7 +5,7 @@ answer appearing, as the system runs today. References name functions in
 `server/app.py` (stable across edits) rather than line numbers.
 
 > **Current config on production** (all admin-tunable in *Admin → Models & config*):
-> provider `openai` · generation `gpt-5.2` · judge `gpt-5-mini` ·
+> provider `openai` · generation `gpt-5.2` · classifier `gpt-5-mini` ·
 > `search.region_mode = indian_first` · `search.mixed_indian_slots = 40` ·
 > `retrieval.min_chunks = 1` · `websearch.max_uses = 3` ·
 > allowlist 200 domains (100 Indian, 100 international) ·
@@ -29,9 +29,9 @@ Send
      ├─ TIER 2  — search allowlisted sources, one call per batch:
      │     for each batch until one answers:
      │        generate-with-search  →  citations
-     │        gate: enough citations?          (retrieval.min_chunks)
-     │        judge: answered? grounded? provenance_ok?   (separate model call)
-     │        pass → Tier 2 answer, stop
+     │        gate: enough citations? (retrieval.min_chunks)
+     │        refusal check: is it the NO_SUBSTANTIVE_ANSWER sentinel?
+     │        pass both → Tier 2 answer, stop
      │        fail → log the reason, try next batch
      ├─ TIER 3  — if no batch answered:
      │        general-model answer, no citations (unverified)
@@ -91,7 +91,7 @@ Then the SSE stream opens and everything below runs inside it.
 ## 4. Tier 2 — grounded web search
 
 Tier 2 is the product. It searches the allowlist and only serves an answer that
-survives a citation gate **and** an independent judge.
+survives a citation gate **and** is not a refusal sentinel.
 
 ### 4a. Building the search batches
 
@@ -143,31 +143,22 @@ For each batch, until one answers:
 5. **Tag citations by region:** each citation is tagged `IN`/`INTL`
    by its domain (suffix-matched, since providers return hosts like `www.who.int`
    for an allowlisted `who.int`; an unrecognised host is never treated as Indian).
-   This happens **before** the judge, so the judge sees the region markers.
+   The region drives the answer's badge (`source_region`).
 
-### 4c. The judge — `_verdict`
+### 4c. The refusal check — `_is_non_answer`
 
-A **separate `gpt-5-mini` model call** audits the draft against its own
-citations and returns three booleans. (It is a separate call because Anthropic
-rejects structured output combined with its Citations feature, so grounding is
-judged after generation rather than during it.)
+There is **no groundedness judge** (removed — see [Removed](#removed)). The only
+check between a generated draft and it being served is a **string test**, not a
+model call: the generation prompt instructs the model to reply exactly
+`NO_SUBSTANTIVE_ANSWER` when the sources don't answer, and `_is_non_answer`
+catches that sentinel (or an empty answer) and falls through to the next batch.
 
-- **`answered`** — does the text actually answer, or is it a disguised refusal
-  ("the sources don't cover this")? This is the guard against the original bug
-  where a refusal was served behind a green *Grounded* badge.
-- **`grounded`** — are the claims supported by the cited passages?
-- **`provenance_ok`** — is any dosing / availability / NLEM / national-programme
-  claim resting on an `[INTL]` source, or international guidance dressed up as
-  Indian? Either makes it `false`.
-
-Each citation is passed to the judge tagged `[IN]` / `[INTL]`. If the judge call
-itself fails, `ok=false`.
-
-**Any** of these failing (`not ok`, `not answered`, `not grounded`,
-`not provenance_ok`) → the answer is thrown away, the reason is logged, and the
-loop moves to the next batch. Only when all pass is the Tier 2
-answer committed: `tier=2`, `status=answered`, the segments, the citations, and
-`source_region` = the single region if all citations agree, else `MIXED`.
+That is the *entire* remaining guard. An answer that has ≥ `min_chunks`
+citations and is not the sentinel is served as `tier=2, status=answered` —
+whether or not its claims are actually supported by those citations, and
+regardless of whether a dosing claim rests on an international source. Both of
+those were the judge's job. `source_region` is the single region if all
+citations agree, else `MIXED`.
 
 ### 4d. Dual mode — parallel search + compose (built, dormant) {#4d-dual-mode}
 
@@ -190,17 +181,17 @@ giving each pool **its own call with its own budget the other cannot consume.**
    two 1 s searches). Because each call's allowlist is one pool, the Indian
    search is *structurally incapable* of returning international results — the
    starvation failure is impossible, not merely discouraged.
-3. **Gate + region-tag each draft** exactly as §4b does, independently.
+3. **Gate + region-tag each draft** exactly as §4b does (citation count +
+   sentinel check), independently.
 4. **Compose** (`_compose`, `both_answered` case only): one call with **no
    search tool**, on the generation model. Its prompt anchors on the Indian
    position where one exists, always shows that international evidence exists,
    surfaces conflicts with attribution rather than averaging, and states plainly
    where Indian sources are silent. Output = one Indian-anchored answer; its
    citations are the **union** of both drafts, still region-tagged.
-5. **Judge** the composed answer (or the single-pool draft) with the same
-   `_verdict` — it audits what the clinician will actually see, so a
-   foreign-sourced dosing claim introduced by composition is still caught by
-   `provenance_ok`.
+5. **Refusal check** the composed answer (or the single-pool draft) with
+   `_is_non_answer` — a sentinel/empty composed answer falls through. There is
+   no groundedness or provenance check on the merged answer; it is served as-is.
 
 **Asymmetric outcomes are first-class**, recorded in `pool_outcome`:
 
@@ -235,7 +226,7 @@ upfront withhold: the general model is *always* the fallback (see
 A final safety net before anything is shown: if a response claims a tier but has
 no answer text, or claims Tier 2 but carries no citations, it is forcibly
 downgraded to `not_found`. This makes "a grounded badge with nothing real behind
-it" structurally impossible, independent of anything the model or judge did.
+it" structurally impossible, independent of anything the model did.
 
 ## 7. Persist + respond
 
@@ -266,22 +257,20 @@ seconds.
 
 ## Cost of one question
 
-- **Tier 2 served on the Indian batch:** 2 model calls — one
-  generate-with-search, one judge. (~20–30 s wall clock; the search dominates.)
+- **Tier 2 served on the Indian batch:** 1 model call — the
+  generate-with-search. (~20–30 s wall clock; the search dominates.)
   This is the common case under `indian_first`.
-- **Falls to International then serves:** add one more generate-with-search
-  (+ its judge call) — the Indian batch ran, failed, and the International batch
-  ran next.
-- **Each failed batch adds** one generate-with-search (+ a judge call if it got
-  as far as the judge).
+- **Falls to International then serves:** add one more generate-with-search —
+  the Indian batch ran, fell through, and the International batch ran next.
+- **Each failed batch adds** one generate-with-search.
 - **Tier 3 answer:** the Tier 2 attempts **plus** one more general-model call.
 - **Not found:** the Tier 2 attempts plus the Tier 3 call that came back empty.
 
 **In `dual` mode**, a `both`-plan question costs a classifier call + two
 searches (parallel, so ~one search of *latency* but ~2× search *spend*) +
-compose + judge — 5 model calls, ~one search of wall-clock. A single-pool plan
+compose — 4 model calls, ~one search of wall-clock. A single-pool plan
 (`international_only` / `indian_only`) skips compose and stays at classifier +
-1 search + judge. The design accepts the extra spend to get Indian/international
+1 search. The design accepts the extra spend to get Indian/international
 parity right, and logs `pool_outcome` so the cost trade can later be tuned from
 real numbers.
 
@@ -299,8 +288,8 @@ These are live as of this writing and documented here so the trace is honest:
 1. **No "reference tool, not clinician" enforcement.** The Tier 2 prompt asks
    the model to report what the literature says, not to advise — but nothing
    checks it, and the model will still produce a personalised care plan
-   ("what patient X should do") when the question invites one. The judge does
-   not test for this.
+   ("what patient X should do") when the question invites one. Nothing checks
+   for this.
 2. **Daily-cap window is wrong.** `created_at > datetime('now','-1 day')`
    compares an ISO-8601 timestamp (with a `T`) against a space-separated
    SQLite datetime; on the boundary date the comparison mis-sorts and counts
@@ -334,6 +323,24 @@ answer — grounded when it can, general-model-with-warning otherwise — and on
 returns `not_found` when even the general model comes back empty. There is no
 remaining way to make the product refuse a question upfront; the config key is
 deleted on boot and the admin switch is gone.
+
+**The groundedness judge** (`_verdict`, `VERDICT_SYSTEM`, `groundedness.judge`),
+a separate `gpt-5-mini` call that audited every Tier 2 draft on three booleans —
+`answered` (is it a disguised refusal?), `grounded` (do the citations support the
+claims?), `provenance_ok` (does a dosing/NLEM claim rest on a foreign source?).
+Removed at the operator's direction after it repeatedly failed *composed* dual
+answers as `not_grounded` and dropped good questions to Tier 3.
+
+This is the most consequential removal. The `answered` guard was the guard
+against **the founding bug of this codebase** — a refusal served behind a green
+*Grounded* badge. In its place is only `_is_non_answer`, a string check for the
+`NO_SUBSTANTIVE_ANSWER` sentinel the generation prompt asks the model to emit.
+So: a model that emits the sentinel is caught; a model that writes a *prose*
+refusal, or a confidently wrong answer, or a dosing figure from an international
+source, is **now served as grounded**. The generation prompt still asks the
+model not to do these things (rules 2–5, 9), but nothing enforces it. The only
+structural guarantees left are the citation-count gate and the invariant guard
+(no empty/uncited answer behind a badge).
 
 ---
 

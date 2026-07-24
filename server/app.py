@@ -4,7 +4,7 @@ Pramana orchestrator — FastAPI backend for the two-tier MVP.
 Tiers (Tier 1/corpus was cut from scope):
   Tier 2  — grounded web answer: Anthropic web_search server tool restricted
             to the admin-maintained allowlist (`allowed_domains`), citations
-            enforced by the API, groundedness-judged.
+            enforced by the API. Served on citation presence, no judge.
   Tier 3  — general-model fallback, clearly labelled and marked unverified.
             Always the fallback when Tier 2 finds no grounded answer.
 
@@ -134,7 +134,6 @@ SEED_CONFIG = [
      "Which model provider answers questions. Requires that provider's API key.", 1),
     ("generation.effort", "medium", "medium", "Effort level for generation (low|medium|high).", 0),
     ("websearch.max_uses", "5", "5", "Tier 2 search cap per query.", 0),
-    ("groundedness.judge", "true", "true", "Run the judge model on Tier 2 answers.", 0),
     # Retrieval gate: a single stray source is not coverage. Applied to the
     # grounded path — fewer than this many distinct cited sources falls through.
     ("retrieval.min_chunks", "2", "2",
@@ -227,7 +226,7 @@ def init_db() -> None:
     # is now always the fallback, so there is no upfront withhold to toggle.
     q("""DELETE FROM app_config WHERE key LIKE 'embedding%'
          OR key IN ('model.generation','model.tier3','model.judge',
-                    'answers.allow_tier3')""")
+                    'answers.allow_tier3', 'groundedness.judge')""")
     if not q("SELECT 1 FROM access_requests LIMIT 1"):
         q("INSERT INTO access_requests(name,email,reg,council,specialty,institution,status,created_at) "
           "VALUES(?,?,?,?,?,?, 'pending', ?)",
@@ -543,27 +542,6 @@ def _compose(query: str, indian, intl):
             merged.append(c)
     return text, merged, followups, model
 
-# The router's ONLY refusal signal. Returned by a dedicated structured call
-# because Anthropic rejects structured output combined with the Citations
-# feature (400) — and API-enforced citations are the product's core promise,
-# so generation keeps citations and the boolean comes from this verdict step.
-VERDICT_SYSTEM = (
-    "You audit a draft answer against the sources it cites. Return JSON only.\n"
-    "Each cited source is tagged [IN] (Indian) or [INTL] (international).\n"
-    "answered: true only if the answer states substantive findings drawn from "
-    "the cited sources. It is FALSE if the text instead reports that nothing "
-    "was found, describes what was searched for, says the sources do not cover "
-    "the question, is empty, or only points elsewhere for the real answer.\n"
-    "grounded: true only if the cited evidence supports the answer's factual "
-    "claims.\n"
-    "provenance_ok: false if any claim about drug dosing or dose adjustment, "
-    "drug availability, formulary or NLEM status, or an Indian national "
-    "programme protocol (TB, HIV, vector-borne, immunisation) rests on a "
-    "source tagged [INTL]. Also false if the answer presents international "
-    "guidance as though it were Indian guidance. True otherwise.\n"
-    'Reply exactly: {"answered": <bool>, "grounded": <bool>, '
-    '"provenance_ok": <bool>}'
-)
 
 TIER3_SYSTEM = (
     "You are Pramana's unverified fallback. The vetted literature pool — "
@@ -587,7 +565,7 @@ TIER3_SYSTEM = (
 #
 # Two providers are supported (PRD D3). They are NOT equivalent for Tier 2:
 # Anthropic's web_search server tool enforces citations at the API level, which
-# is what the groundedness promise rests on. OpenAI's web search returns URL
+# is what the citation promise rests on. OpenAI's web search returns URL
 # annotations, which we map onto the same contract — good, but a different
 # guarantee. The admin UI flags this when an OpenAI model is chosen for Tier 2.
 
@@ -800,64 +778,15 @@ def _extract_answer(resp) -> tuple[list[dict], list[dict], str]:
     return segments, citations, "\n".join(plain).strip()
 
 
-def _verdict(question: str, answer: str, citations: list[dict]) -> dict:
-    """Structured refusal + groundedness signal. Booleans only.
-
-    Returns {"answered": bool, "grounded": bool, "ok": bool}. `ok` is False if
-    the verdict call itself failed, which the router treats conservatively:
-    an unverifiable answer is never served behind a grounded badge.
-    """
-    if not citations:
-        return {"answered": False, "grounded": False,
-                "provenance_ok": False, "ok": True}
-    evidence = "\n".join(
-        f"[{'INTL' if c.get('region') == 'INTL' else 'IN'}] {c['domain']} — "
-        f"{c['cited_text'][:400]}" for c in citations[:8])
-    prompt = (f"Question: {question}\n\nDraft answer: {answer}\n\n"
-              f"Cited sources:\n{evidence}")
-    judge_model = model_for("judge")
-    schema = {"type": "object",
-              "properties": {"answered": {"type": "boolean"},
-                             "grounded": {"type": "boolean"},
-                             "provenance_ok": {"type": "boolean"}},
-              "required": ["answered", "grounded", "provenance_ok"],
-              "additionalProperties": False}
-    for _ in range(2):                     # one retry; transient failures happen
-        try:
-            jc = _client(judge_model)
-            if provider_of(judge_model) == "openai":
-                # Reasoning models spend max_output_tokens on internal
-                # reasoning first: a small budget returns status=incomplete
-                # with empty output_text, which silently failed every verdict.
-                r = jc.responses.create(model=judge_model,
-                                        instructions=VERDICT_SYSTEM,
-                                        input=prompt, max_output_tokens=2000)
-                text = getattr(r, "output_text", "") or ""
-                if getattr(r, "status", "") == "incomplete" and not text.strip():
-                    raise RuntimeError("verdict truncated by token budget")
-            else:
-                resp = jc.messages.create(
-                    model=judge_model, max_tokens=256,
-                    system=[{"type": "text", "text": VERDICT_SYSTEM}],
-                    output_config={"format": {"type": "json_schema", "schema": schema}},
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                text = next(b.text for b in resp.content if b.type == "text")
-            m = re.search(r"\{.*\}", text, re.S)
-            data = json.loads(m.group(0) if m else text)
-            grounded = bool(data.get("grounded"))
-            if cfg("groundedness.judge", "true") != "true":
-                grounded = True            # judge disabled by admin switch
-            # Absent key means the judge did not assert a violation. Defaulting
-            # to False here would refuse every Indian-pass answer.
-            return {"answered": bool(data.get("answered")),
-                    "grounded": grounded,
-                    "provenance_ok": bool(data.get("provenance_ok", True)),
-                    "ok": True}
-        except Exception:
-            continue
-    return {"answered": False, "grounded": False,
-            "provenance_ok": False, "ok": False}
+def _is_non_answer(text: str) -> bool:
+    """Refusal guard. The generation prompt tells the model to reply exactly
+    NO_SUBSTANTIVE_ANSWER when the sources do not answer the question. With the
+    groundedness judge removed, this sentinel is the only thing standing between
+    a refusal and it being served behind a grounded badge — so an empty answer,
+    or one that leads with the sentinel, is treated as "this pool did not
+    answer" and falls through. It is a string check, not a model call."""
+    t = (text or "").strip()
+    return not t or "NO_SUBSTANTIVE_ANSWER" in t.upper()[:60]
 
 
 def _grounded_answer(model: str, system: str, msgs: list[dict],
@@ -1019,6 +948,11 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                 if len(cites) < min_chunks:
                     fell(2, f"below_min_chunks:{r}({len(cites)}<{min_chunks})")
                     continue
+                if _is_non_answer(text):
+                    # This pool signalled it could not answer — keep it out of
+                    # compose so a refusal draft can't taint the merged answer.
+                    fell(2, f"no_substantive_answer:{r}")
+                    continue
                 good[r] = (text, cites, fups, umodel)
 
             result["indian_citations"] = len(good["IN"][1]) if "IN" in good else 0
@@ -1048,28 +982,20 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                 result["pool_outcome"] = "both_empty"
                 candidate = None
 
-            if candidate:
+            if candidate and _is_non_answer(candidate[0]):
+                fell(2, "no_substantive_answer:dual")
+            elif candidate:
                 text, cites, fups, umodel = candidate
-                yield sse("stage", {"label": "Checking the answer against its sources"})
-                v = _verdict(query, text, cites)
-                verdict_fail = ("verdict_unavailable" if not v["ok"] else
-                                "not_answered" if not v["answered"] else
-                                "not_grounded" if not v["grounded"] else
-                                "provenance_violation" if not v.get("provenance_ok", True)
-                                else None)
-                if verdict_fail:
-                    fell(2, f"{verdict_fail}:dual")
-                else:
-                    answered_t2 = True
-                    cregions = {c["region"] for c in cites}
-                    result.update({
-                        "tier": 2, "status": "answered", "answer_text": text,
-                        "segments": [{"text": text,
-                                      "citations": list(range(len(cites)))}],
-                        "citations": cites, "followups": fups, "model_used": umodel,
-                        "source_region": (cregions.pop() if len(cregions) == 1
-                                          else "MIXED"),
-                    })
+                answered_t2 = True
+                cregions = {c["region"] for c in cites}
+                result.update({
+                    "tier": 2, "status": "answered", "answer_text": text,
+                    "segments": [{"text": text,
+                                  "citations": list(range(len(cites)))}],
+                    "citations": cites, "followups": fups, "model_used": umodel,
+                    "source_region": (cregions.pop() if len(cregions) == 1
+                                      else "MIXED"),
+                })
             batched = []          # dual path is complete; skip the batch loop
         elif region_mode == "mixed":
             # One pool per call, both regions present. Precedence is no longer
@@ -1127,44 +1053,28 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                 # Retrieval gate: a lone source is not coverage.
                 fell(2, f"below_min_chunks:{tag}({len(citations)}<{min_chunks})")
                 yield sse("stage", {"label": "Not enough supporting references found"})
+            elif _is_non_answer(plain):
+                # The model signalled it could not answer from these sources.
+                fell(2, f"no_substantive_answer:{tag}")
             else:
                 yield sse("stage", {"label": f"Found {len(citations)} supporting "
                                              f"reference{'' if len(citations)==1 else 's'}"})
-                yield sse("stage", {"label": "Checking the answer against its sources"})
-                # Tag before the verdict: the judge decides provenance from the
-                # [IN]/[INTL] markers, so untagged citations would read as Indian.
-                # Tagged per domain, not per pass — a mixed pool returns both.
                 for c in citations:
                     c["region"] = cite_region(c.get("domain", ""))
-                v = _verdict(query, plain, citations)
-                if not v["ok"]:
-                    fell(2, f"verdict_unavailable:{tag}")
-                elif not v["answered"]:
-                    # THE regression guard: the model produced prose but it does
-                    # not substantively answer. Never serve this behind a badge.
-                    fell(2, f"not_answered:{tag}")
-                elif not v["grounded"]:
-                    fell(2, f"not_grounded:{tag}")
-                elif not v.get("provenance_ok", True):
-                    # Dosing/NLEM/programme claim resting on foreign guidance,
-                    # or international guidance dressed up as Indian. Same
-                    # severity as ungrounded: refuse rather than render.
-                    fell(2, f"provenance_violation:{tag}")
-                else:
-                    answered_t2 = True
-                    # Derived from what was actually cited, not from which pool
-                    # was searched: a mixed pool can produce a purely Indian
-                    # answer, and the badge must reflect the sources used.
-                    cregions = {c["region"] for c in citations}
-                    result.update({
-                        "tier": 2, "status": "answered", "answer_text": plain,
-                        "segments": [{"text": plain,
-                                      "citations": list(range(len(citations)))}],
-                        "citations": citations, "followups": followups,
-                        "model_used": used_model,
-                        "source_region": (cregions.pop() if len(cregions) == 1
-                                          else "MIXED"),
-                    })
+                answered_t2 = True
+                # Region derived from what was actually cited, not from which
+                # pool was searched: a mixed pool can produce a purely Indian
+                # answer, and the badge must reflect the sources used.
+                cregions = {c["region"] for c in citations}
+                result.update({
+                    "tier": 2, "status": "answered", "answer_text": plain,
+                    "segments": [{"text": plain,
+                                  "citations": list(range(len(citations)))}],
+                    "citations": citations, "followups": followups,
+                    "model_used": used_model,
+                    "source_region": (cregions.pop() if len(cregions) == 1
+                                      else "MIXED"),
+                })
 
         # ---------- Tier 3 / not found ----------
         # A not_found response carries tier: null — no badge, no tier styling.
