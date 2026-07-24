@@ -521,6 +521,121 @@ check("www-prefixed and sub-hosts resolve to their region",
 
 A.q("UPDATE app_config SET value='indian_first' WHERE key='search.region_mode'")
 
+# --------------------------------------------------------------- test 11
+# Dual mode: two dedicated searches, each confined to its own pool, then a
+# compose call merges them. The starvation failure is impossible because the
+# Indian call's allowlist is Indian-only.
+print("\n11. Dual mode: parallel per-pool search + compose")
+A.q("UPDATE app_config SET value='dual' WHERE key='search.region_mode'")
+
+live_intl = {r["domain"] for r in A.q(
+    "SELECT domain FROM allowlist_domains WHERE enabled=1 AND region='INTL'")}
+live_in = {r["domain"] for r in A.q(
+    "SELECT domain FROM allowlist_domains WHERE enabled=1 AND region='IN'")}
+
+A._retrieval_plan = lambda q: "both"
+A._verdict = lambda q, a, c: {"answered": True, "grounded": True,
+                              "provenance_ok": True, "ok": True}
+compose_seen = {}
+
+
+def _dual_search_factory(indian_cites, intl_cites, in_text="Indian draft.",
+                         intl_text="International draft."):
+    """Region-aware stub: returns different drafts per pool, and records that
+    each call's pool was confined to that region."""
+    def _ga(model, system, msgs, pool, effort, max_uses):
+        pool_is_intl = bool(set(pool) & live_intl)
+        pool_is_in = bool(set(pool) & live_in)
+        # the crux: each call sees exactly one pool
+        assert not (pool_is_intl and pool_is_in), "dual call mixed the pools!"
+        if pool_is_in:
+            return (in_text, [dict(c) for c in indian_cites], "stub-in", False)
+        return (intl_text, [dict(c) for c in intl_cites], "stub-intl", False)
+    return _ga
+
+
+def _spy_compose(query, indian, intl):
+    compose_seen["indian_text"] = indian[0]
+    compose_seen["intl_text"] = intl[0]
+    merged = list(indian[1]) + list(intl[1])
+    return ("Composed Indian-anchored answer.", merged, ["f1", "f2"], "stub-compose")
+
+
+A._compose = _spy_compose
+
+# 11a — both pools answer → compose runs, badge MIXED, counts recorded
+A._grounded_answer = _dual_search_factory(list(CITE), list(INTL_CITE))
+compose_seen.clear()
+r11 = ask("dual both-answered probe")
+check("both pools answered → Tier 2", r11["tier"] == 2, f"tier={r11['tier']}")
+check("pool_outcome is both_answered",
+      r11.get("pool_outcome") == "both_answered", str(r11.get("pool_outcome")))
+check("compose received both drafts",
+      compose_seen.get("indian_text") == "Indian draft."
+      and compose_seen.get("intl_text") == "International draft.", str(compose_seen))
+check("composed citations are the union, region-tagged",
+      {c["region"] for c in r11["citations"]} == {"IN", "INTL"},
+      str([(c["domain"], c.get("region")) for c in r11["citations"]]))
+check("source_region MIXED for a merged answer",
+      r11.get("source_region") == "MIXED", str(r11.get("source_region")))
+check("per-pool citation counts recorded",
+      r11.get("indian_citations") == len(CITE)
+      and r11.get("intl_citations") == len(INTL_CITE),
+      f"in={r11.get('indian_citations')} intl={r11.get('intl_citations')}")
+
+# 11b — Indian empty → international-only answer, no compose, honest outcome
+A._grounded_answer = _dual_search_factory([], list(INTL_CITE))
+compose_seen.clear()
+r11b = ask("dual indian-empty probe")
+check("Indian empty → still answered from international",
+      r11b["tier"] == 2 and r11b.get("source_region") == "INTL",
+      f"tier={r11b['tier']} region={r11b.get('source_region')}")
+check("Indian-empty outcome is intl_only_answered",
+      r11b.get("pool_outcome") == "intl_only_answered", str(r11b.get("pool_outcome")))
+check("compose skipped when only one pool answered",
+      compose_seen == {}, str(compose_seen))
+check("indian_citations is 0 when Indian pool was empty",
+      r11b.get("indian_citations") == 0, str(r11b.get("indian_citations")))
+
+# 11c — both empty → falls through, no Tier 2
+A._grounded_answer = _dual_search_factory([], [])
+A._openai_plain = lambda *a, **k: ""
+r11c = ask("dual both-empty probe")
+check("both pools empty → not Tier 2", r11c["tier"] != 2, f"tier={r11c['tier']}")
+check("both-empty outcome recorded",
+      r11c.get("pool_outcome") == "both_empty", str(r11c.get("pool_outcome")))
+
+# 11d — classifier plan is honoured: international_only skips the Indian call
+searched_pools: list[str] = []
+
+
+def _plan_spy_search(model, system, msgs, pool, effort, max_uses):
+    searched_pools.append("IN" if set(pool) & live_in else "INTL")
+    return ("International draft.", list(INTL_CITE), "stub", False)
+
+
+A._retrieval_plan = lambda q: "international_only"
+A._grounded_answer = _plan_spy_search
+searched_pools.clear()
+r11d = ask("dual international_only plan probe")
+check("international_only plan searches only the international pool",
+      searched_pools == ["INTL"], str(searched_pools))
+
+# 11e — provenance violation on a composed answer is refused like Tier 2
+A._retrieval_plan = lambda q: "both"
+A._grounded_answer = _dual_search_factory(list(CITE), list(INTL_CITE))
+A._verdict = lambda q, a, c: {"answered": True, "grounded": True,
+                              "provenance_ok": False, "ok": True}
+r11e = ask("dual provenance-violation probe")
+check("composed answer failing provenance → never Tier 2",
+      r11e["tier"] != 2, f"tier={r11e['tier']}")
+check("provenance fall-through logged for dual",
+      any("provenance_violation" in f["reason"] for f in (r11e.get("fallthrough") or [])),
+      str(r11e.get("fallthrough")))
+
+A._verdict = REAL_VERDICT
+A.q("UPDATE app_config SET value='indian_first' WHERE key='search.region_mode'")
+
 print("\n" + "=" * 60)
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S):")

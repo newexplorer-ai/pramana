@@ -24,6 +24,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -109,7 +110,8 @@ CREATE TABLE IF NOT EXISTS query_logs(
   query_text TEXT, tier INTEGER, status TEXT, high_stakes INTEGER,
   latency_ms INTEGER, model_used TEXT, feedback TEXT,
   suggested_source INTEGER DEFAULT 0, fallthrough TEXT,
-  source_region TEXT, created_at TEXT);
+  source_region TEXT, pool_outcome TEXT,
+  indian_citations INTEGER, intl_citations INTEGER, created_at TEXT);
 CREATE TABLE IF NOT EXISTS saved_conversations(
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_email TEXT, title TEXT,
   conversation_id TEXT, query TEXT, saved_at TEXT,
@@ -142,11 +144,20 @@ SEED_CONFIG = [
     # Western guidance. 'indian_only' disables the international fallback.
     ("search.region_mode", "mixed", "indian_first",
      "indian_first (Indian pool searched alone first) | mixed (both regions in "
-     "one call) | indian_only (no international fallback).", 1),
+     "one call) | indian_only (no international fallback) | dual (two dedicated "
+     "parallel searches, composed into one Indian-anchored answer).", 1),
     # Mixed mode only. Indian slots in the first call; the rest of the cap goes
     # to international. Higher = stronger Indian presence in the ranked pool.
     ("search.mixed_indian_slots", "40", "40",
      "Mixed mode: Indian sources in the first search call (rest are international).", 1),
+    # Dual mode. Each pool gets its own search call (own budget the other can't
+    # consume), then a compose call merges them Indian-anchored.
+    ("search.dual_indian_cap", "100", "100",
+     "Dual mode: max Indian domains in the Indian search call.", 0),
+    ("search.dual_intl_cap", "100", "100",
+     "Dual mode: max international domains in the international search call.", 0),
+    ("search.dual_classifier", "true", "true",
+     "Dual mode: run the retrieval-plan classifier. Off = always search both pools.", 0),
     # Safety switch: when false, unverified general-model answers are never
     # served — every ungrounded question returns an honest not-found instead.
     ("answers.allow_tier3", "true", "true",
@@ -163,6 +174,14 @@ def _migrate() -> None:
         q("ALTER TABLE query_logs ADD COLUMN fallthrough TEXT")
     if "source_region" not in cols:
         q("ALTER TABLE query_logs ADD COLUMN source_region TEXT")
+    # Dual-pool instrumentation: which pools answered, and how many citations
+    # each contributed — the record that makes the old starvation bug visible.
+    if "pool_outcome" not in cols:
+        q("ALTER TABLE query_logs ADD COLUMN pool_outcome TEXT")
+    if "indian_citations" not in cols:
+        q("ALTER TABLE query_logs ADD COLUMN indian_citations INTEGER")
+    if "intl_citations" not in cols:
+        q("ALTER TABLE query_logs ADD COLUMN intl_citations INTEGER")
     dcols = {r["name"] for r in q("PRAGMA table_info(allowlist_domains)")}
     if "region" not in dcols:
         q("ALTER TABLE allowlist_domains ADD COLUMN region TEXT NOT NULL DEFAULT 'IN'")
@@ -401,6 +420,132 @@ def tier2_system(region: str) -> str:
             "healthcare professionals. Answer the clinical question using ONLY "
             "the web search results. "
             f"{_T2_POOL.get(region, _T2_POOL['IN'])}\n\n{_T2_RULES}")
+
+
+# --- dual mode: retrieval-plan classifier ---------------------------------
+# Decides which source pools a question needs, so pure-science questions skip
+# the Indian call + compose and stay at single-pool cost. Biased to 'both':
+# the failure we care about is missing the India overlay, never over-searching.
+PLAN_SYSTEM = (
+    "You triage a clinical question for a medical reference tool used by doctors "
+    "practising in India. Decide which source pools to search. Return JSON only.\n"
+    "plan = 'both' when the question has BOTH an evidence dimension (mechanism, "
+    "efficacy, trial data, guideline position) AND an India practice-context "
+    "dimension (drug availability, NLEM status, cost, ICMR or national-programme "
+    "position, local epidemiology). This is the common case — prefer it.\n"
+    "plan = 'international_only' ONLY for pure science with no India angle — "
+    "mechanism, pathophysiology, trial design — where local context adds nothing.\n"
+    "plan = 'indian_only' ONLY for purely local/administrative questions "
+    "(programme coverage, NLEM listing alone) where international evidence adds "
+    "nothing.\n"
+    "When unsure, choose 'both'.\n"
+    'Reply exactly: {"plan": "both" | "international_only" | "indian_only"}'
+)
+_PLANS = ("both", "international_only", "indian_only")
+
+
+def _retrieval_plan(query: str) -> str:
+    """Which pools to search. Fails open to 'both' on any doubt."""
+    if cfg("search.dual_classifier", "true") != "true":
+        return "both"
+    judge_model = model_for("judge")
+    schema = {"type": "object",
+              "properties": {"plan": {"type": "string", "enum": list(_PLANS)}},
+              "required": ["plan"], "additionalProperties": False}
+    try:
+        jc = _client(judge_model)
+        if provider_of(judge_model) == "openai":
+            r = jc.responses.create(model=judge_model, instructions=PLAN_SYSTEM,
+                                    input=query, max_output_tokens=2000)
+            text = getattr(r, "output_text", "") or ""
+            if getattr(r, "status", "") == "incomplete" and not text.strip():
+                return "both"
+        else:
+            resp = jc.messages.create(
+                model=judge_model, max_tokens=64,
+                system=[{"type": "text", "text": PLAN_SYSTEM}],
+                output_config={"format": {"type": "json_schema", "schema": schema}},
+                messages=[{"role": "user", "content": query}])
+            text = next(b.text for b in resp.content if b.type == "text")
+        m = re.search(r"\{.*\}", text, re.S)
+        plan = json.loads(m.group(0) if m else text).get("plan")
+        return plan if plan in _PLANS else "both"
+    except Exception:
+        return "both"
+
+
+# --- dual mode: compose two cited drafts into one answer ------------------
+# One call, NO search tool. Indian-anchored merge: the Indian position governs
+# practice, but international evidence is always shown where it exists. The
+# formatting rules mirror Tier 2 so the UI renders it and follow-ups parse.
+COMPOSE_SYSTEM = (
+    "You are Pramana, composing ONE answer for a doctor practising in India from "
+    "two drafts of the same question: DRAFT A from Indian sources and DRAFT B "
+    "from international sources. Use ONLY facts present in the drafts — introduce "
+    "nothing new and invent no citations.\n"
+    "1. ANCHOR on the Indian position where DRAFT A states one; it governs what "
+    "the doctor actually does.\n"
+    "2. ALWAYS show that international evidence exists where DRAFT B addressed the "
+    "question. Never present the Indian view as the only view when international "
+    "sources spoke to the same point.\n"
+    "3. Where the two AGREE, use the international evidence as the backbone and "
+    "the Indian detail to localise it (availability, NLEM, cost, programme).\n"
+    "4. Where they CONFLICT, surface it inline, attribute each side to its source, "
+    "and name the reason for divergence where derivable (recency, cost, "
+    "availability, population). Never average the two or silently pick one.\n"
+    "5. Where DRAFT A is SILENT (Indian sources did not cover it), say so plainly "
+    "and give the international evidence as the available basis, flagged as such.\n"
+    "6. Attribute international claims in-line (\"international guidance from "
+    "KDIGO…\", \"WHO…\"). Never let a claim about drug dosing, availability, NLEM "
+    "status or a national programme rest on an international source without "
+    "saying so.\n"
+    "7. Aim for 150-250 words: open with a direct answer, then short headings "
+    "(## Heading), numbered steps for a mechanism or sequence, and bold for key "
+    "figures. Do not pad.\n"
+    "8. Keep one or two of the short verbatim quotes the drafts already carry, "
+    "on their own line prefixed with '> ', naming the body that published each.\n"
+    "9. After the answer, on a new line, write [[FOLLOWUPS]] followed by two "
+    "short follow-up questions separated by ' | '."
+)
+
+
+def _compose(query: str, indian, intl):
+    """Merge two (text, citations, ...) drafts into one Indian-anchored answer.
+
+    Returns (text, citations, followups, model). Citations are the union of
+    both drafts (deduped by URL), already region-tagged. No search happens.
+    """
+    def _block(label, draft):
+        text, cites = draft[0], draft[1]
+        lines = "\n".join(f"- [{c.get('region','INTL')}] {c.get('domain','')} — "
+                          f"{(c.get('cited_text') or '')[:300]}" for c in cites)
+        return f"{label}:\n{text}\n\nSources cited:\n{lines or '(none)'}"
+
+    prompt = (f"Question: {query}\n\n"
+              f"{_block('DRAFT A — from Indian sources', indian)}\n\n"
+              f"{_block('DRAFT B — from international sources', intl)}")
+    # Generation model, not the judge model: this is the text the clinician
+    # reads, so answer quality outranks the small saving. One no-search call.
+    model = model_for("generation")
+    client = _client(model)
+    if provider_of(model) == "openai":
+        text = _openai_plain(client, model, COMPOSE_SYSTEM,
+                             [{"role": "user", "content": prompt}])
+    else:
+        resp = client.messages.create(
+            model=model, max_tokens=1600,
+            system=[{"type": "text", "text": COMPOSE_SYSTEM}],
+            messages=[{"role": "user", "content": prompt}])
+        text = "\n".join(b.text for b in resp.content if b.type == "text")
+    text, followups = _parse_followups(_strip_md_links(text))
+    # Union the citations, dedup by URL, order Indian-first for the rail.
+    merged, seen = [], set()
+    for c in list(indian[1]) + list(intl[1]):
+        u = c.get("url", "")
+        if u and u not in seen:
+            seen.add(u)
+            merged.append(c)
+    return text, merged, followups, model
 
 # The router's ONLY refusal signal. Returned by a dedicated structured call
 # because Anthropic rejects structured output combined with the Citations
@@ -804,7 +949,8 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
             "query_id": query_id, "conversation_id": conversation_id,
             "high_stakes": high_stakes, "sources_searched": sources_searched,
             "retrieved_at": today(), "citations": [], "followups": [],
-            "source_region": None,
+            "source_region": None, "pool_outcome": None,
+            "indian_citations": None, "intl_citations": None,
         }
 
         prov = active_provider()
@@ -828,7 +974,109 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         cap = int(cfg("search.max_domains_per_call",
                       str(PROVIDERS[prov].get("max_domains", 100))))
 
-        if region_mode == "mixed":
+        # ---------- Dual: two dedicated parallel searches, one composed answer ----
+        # Each pool gets its own call with its own search budget the other pool
+        # cannot consume, so an Indian search is never starved by the denser
+        # international pool. A compose call then merges the two, Indian-anchored.
+        if region_mode == "dual":
+            max_uses = int(cfg("websearch.max_uses", "3"))
+            plan = _retrieval_plan(query)
+            in_pool = by_region["IN"][:int(cfg("search.dual_indian_cap", "100"))]
+            intl_pool = by_region["INTL"][:int(cfg("search.dual_intl_cap", "100"))]
+            want = {"IN": plan in ("both", "indian_only") and bool(in_pool),
+                    "INTL": plan in ("both", "international_only") and bool(intl_pool)}
+            if want["IN"]:
+                yield sse("stage", {"label": "Searching reliable Indian medical sources"})
+            if want["INTL"]:
+                yield sse("stage", {"label": "Searching reliable international sources"})
+
+            # The two searches overlap: blocking SDK calls release the GIL on
+            # network I/O, so wall-clock is one search, not two. Threads touch
+            # no DB — every config value they need is resolved above.
+            def _search(region):
+                pool = in_pool if region == "IN" else intl_pool
+                return _grounded_answer(model, tier2_system(region), msgs, pool,
+                                        effort, max_uses)
+            drafts: dict = {}
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                futs = {r: ex.submit(_search, r) for r in ("IN", "INTL") if want[r]}
+                for r, fut in futs.items():
+                    try:
+                        drafts[r] = fut.result()
+                    except Exception as e:
+                        drafts[r] = None
+                        detail = re.sub(r"\s+", " ", str(e))[:160]
+                        fell(2, f"generation_failed:{r}:{type(e).__name__}: {detail}")
+
+            # Gate + region-tag each draft independently, exactly as Tier 2 does.
+            good: dict = {}
+            for r in ("IN", "INTL"):
+                d = drafts.get(r)
+                if not d:
+                    continue
+                text, cites, umodel, refused = d
+                text, fups = _parse_followups(text)
+                if refused:
+                    fell(2, f"provider_refusal:{r}")
+                    continue
+                for c in cites:
+                    c["region"] = cite_region(c.get("domain", ""))
+                if len(cites) < min_chunks:
+                    fell(2, f"below_min_chunks:{r}({len(cites)}<{min_chunks})")
+                    continue
+                good[r] = (text, cites, fups, umodel)
+
+            result["indian_citations"] = len(good["IN"][1]) if "IN" in good else 0
+            result["intl_citations"] = len(good["INTL"][1]) if "INTL" in good else 0
+
+            # Asymmetric outcomes are first-class: compose only when both pools
+            # answered; otherwise serve the one that did, honestly labelled.
+            if "IN" in good and "INTL" in good:
+                result["pool_outcome"] = "both_answered"
+                yield sse("stage", {"label": "Combining Indian and international evidence"})
+                try:
+                    ctext, ccites, cfups, cmodel = _compose(query, good["IN"], good["INTL"])
+                    candidate = (ctext, ccites, cfups, cmodel)
+                except Exception as e:
+                    # Compose is the last thing that can fail; on failure fall
+                    # back to the Indian draft rather than losing the turn.
+                    fell(2, f"compose_failed:{type(e).__name__}")
+                    candidate = good["IN"]
+                    result["pool_outcome"] = "compose_failed_indian"
+            elif "IN" in good:
+                result["pool_outcome"] = "indian_only_answered"
+                candidate = good["IN"]
+            elif "INTL" in good:
+                result["pool_outcome"] = "intl_only_answered"
+                candidate = good["INTL"]
+            else:
+                result["pool_outcome"] = "both_empty"
+                candidate = None
+
+            if candidate:
+                text, cites, fups, umodel = candidate
+                yield sse("stage", {"label": "Checking the answer against its sources"})
+                v = _verdict(query, text, cites)
+                verdict_fail = ("verdict_unavailable" if not v["ok"] else
+                                "not_answered" if not v["answered"] else
+                                "not_grounded" if not v["grounded"] else
+                                "provenance_violation" if not v.get("provenance_ok", True)
+                                else None)
+                if verdict_fail:
+                    fell(2, f"{verdict_fail}:dual")
+                else:
+                    answered_t2 = True
+                    cregions = {c["region"] for c in cites}
+                    result.update({
+                        "tier": 2, "status": "answered", "answer_text": text,
+                        "segments": [{"text": text,
+                                      "citations": list(range(len(cites)))}],
+                        "citations": cites, "followups": fups, "model_used": umodel,
+                        "source_region": (cregions.pop() if len(cregions) == 1
+                                          else "MIXED"),
+                    })
+            batched = []          # dual path is complete; skip the batch loop
+        elif region_mode == "mixed":
             # One pool per call, both regions present. Precedence is no longer
             # structural — it rests on the prompt's PROVENANCE rule — so the
             # answer's region is derived from the citations it actually used.
@@ -1002,13 +1250,14 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         # log + persist the turn (PRD: instrument everything)
         q("""INSERT INTO query_logs(query_id,user_email,conversation_id,query_text,
              tier,status,high_stakes,latency_ms,model_used,fallthrough,
-             source_region,created_at)
-             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+             source_region,pool_outcome,indian_citations,intl_citations,created_at)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
           (query_id, user["email"], conversation_id, query, result["tier"],
            result["status"], int(high_stakes), result["latency_ms"],
            result.get("model_used"),
            json.dumps(falls) if falls else None,
-           result.get("source_region"), now()))
+           result.get("source_region"), result.get("pool_outcome"),
+           result.get("indian_citations"), result.get("intl_citations"), now()))
         q("INSERT INTO turns(conversation_id,role,content,tier,created_at) VALUES(?,?,?,?,?)",
           (conversation_id, "user", query, None, now()))
         if result.get("answer_text"):
