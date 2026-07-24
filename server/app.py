@@ -1581,5 +1581,18 @@ def gap_log(user: dict = Depends(require_role("editor"))):
 async def http_exc(request: Request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
+# HTML entry points (app.html, admin.html, index.html) must always revalidate,
+# or a browser caches the old page and never sees a deploy — the versioned
+# ?v=N query on js/css is worthless if the HTML naming it is itself stale.
+# no-cache = "keep a copy but revalidate every time" (a 304 when unchanged),
+# so it's cheap. JS/CSS are cache-busted by ?v=N, so they stay cacheable.
+@app.middleware("http")
+async def _revalidate_html(request: Request, call_next):
+    resp = await call_next(request)
+    if resp.headers.get("content-type", "").startswith("text/html"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 # Static frontend — mounted last so /api/* wins.
 app.mount("/", StaticFiles(directory=str(ROOT), html=True), name="static")
