@@ -534,39 +534,38 @@
   function renderNotFound(res, query){
     setStrip(null);
     if(!activeTurn) newTurn();
-    const why = {
-      all_tiers_failed: 'The allowlisted sources did not substantively answer this question, and no unverified answer is being shown in its place.',
-    }[res.withheld_reason] || 'No source substantively answered this question.';
+    // A provider outage is not the same as "no source covers this" — say so, and
+    // offer a retry rather than a source suggestion.
+    const svc = res.withheld_reason === 'service_error';
+    const head = svc ? 'The answer service had a problem'
+                     : 'Not found in the indexed Indian literature';
+    const why = svc
+      ? 'The AI service returned an error while answering — this isn’t about your question. Please try again in a moment.'
+      : 'The allowlisted sources did not substantively answer this question, and no unverified answer is being shown in its place.';
 
     activeTurn.innerHTML = `
       <div class="query-echo"><p>${esc(query)}</p></div>
       <div class="nf-card">
-        <div class="nf-head">${svg(I.info,{w:15,stroke:'#8a5a3c'})}<span>Not found in the indexed Indian literature</span></div>
+        <div class="nf-head">${svg(I.info,{w:15,stroke:'#8a5a3c'})}<span>${esc(head)}</span></div>
         <p class="nf-why">${esc(why)}</p>
-        <div class="nf-label">Sources checked</div>
-        <div class="chip-row">${(res.sources_searched||[]).map(s=>
-          `<span class="checked-chip">${esc(String(s).replace(/^web:/,''))}</span>`).join('') ||
-          '<span class="checked-chip">none</span>'}</div>
         <div class="nf-actions">
-          <a class="suggest-src">Suggest a source</a>
+          ${svc ? '<a class="retry-q">Try again</a>'
+                : '<a class="suggest-src">Suggest a source</a>'}
         </div>
       </div>
       <div style="height:20px;"></div>`;
 
     railTitle.textContent = 'Sources · 0';
-    railMode.textContent = 'Not found';
+    railMode.textContent = svc ? 'Service error' : 'Not found';
     railBody.innerHTML = `
       <div class="rail-t3-card" style="background:var(--adm-bg);border-color:var(--adm-br);">
         <div class="rail-t3-head">
           <span class="rail-t3-icon" style="background:#f0e2d3;">${svg(I.info,{w:14,stroke:'#8a5a3c'})}</span>
-          <span class="rail-t3-title">No answer served</span>
+          <span class="rail-t3-title">${svc ? 'Service error' : 'No answer served'}</span>
         </div>
-        <p style="color:var(--adm-ink);">Nothing is shown rather than something unverified. Unanswered questions drive what gets added to the allowlist next.</p>
-      </div>
-      <div>
-        <div class="rail-label">Searched</div>
-        <div class="chip-row">${(res.sources_searched||[]).map(s=>
-          `<span class="checked-chip">${esc(String(s).replace(/^web:/,''))}</span>`).join('')}</div>
+        <p style="color:var(--adm-ink);">${svc
+          ? 'The model provider returned an error. Retrying usually clears it.'
+          : 'Nothing is shown rather than something unverified. Unanswered questions drive what gets added to the allowlist next.'}</p>
       </div>`;
 
     renderRecents();
@@ -576,6 +575,8 @@
       sug.textContent = '✓ Logged to the corpus-gap register — thank you';
       sug.classList.add('done');
     });
+    const retry = activeTurn.querySelector('.retry-q');
+    if(retry) retry.addEventListener('click', () => submit(query));
   }
 
   function renderLiveError(query, detail){

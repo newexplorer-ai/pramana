@@ -589,6 +589,51 @@ A._compose = _spy_compose
 
 A.q("UPDATE app_config SET value='indian_first' WHERE key='search.region_mode'")
 
+# --------------------------------------------------------------- test 12
+# Transient provider errors are retried, and a not-found caused by provider
+# errors is reported as a service error, not "no source covers this".
+print("\n12. Retry on transient errors + service-error vs not-found")
+A.time.sleep = lambda *a, **k: None          # no backoff delay in tests
+
+
+class _Transient(Exception):
+    status_code = 500
+
+
+calls_n = [0]
+def _flaky():
+    calls_n[0] += 1
+    if calls_n[0] < 3:
+        raise _Transient("500")
+    return "ok"
+check("_retry succeeds after transient failures", A._retry(_flaky) == "ok")
+check("_is_transient: 500 is retryable", A._is_transient(_Transient()))
+check("_is_transient: a plain ValueError is not",
+      not A._is_transient(ValueError("bad input")))
+
+n2 = [0]
+def _always_fail():
+    n2[0] += 1
+    raise _Transient("500")
+try:
+    A._retry(_always_fail); raised = False
+except Exception:
+    raised = True
+check("_retry gives up after tries and re-raises", raised)
+check("_retry attempted exactly 3 times", n2[0] == 3, f"n={n2[0]}")
+
+# Router: every tier failing with a provider error → service_error, not not_found
+def _boom(*a, **k):
+    raise _Transient("500")
+A._grounded_answer = _boom
+A._openai_plain = _boom
+A._retrieval_plan = lambda q: "both"
+r12 = ask("provider outage probe")
+check("provider outage → status not_found", r12["status"] == "not_found",
+      f"status={r12['status']}")
+check("provider outage → withheld_reason service_error",
+      r12.get("withheld_reason") == "service_error", str(r12.get("withheld_reason")))
+
 print("\n" + "=" * 60)
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S):")

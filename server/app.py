@@ -664,6 +664,30 @@ def _client(model_id: str):
         raise HTTPException(503, f"anthropic_credentials: {e}")
 
 
+def _is_transient(e: Exception) -> bool:
+    """A provider error worth retrying: 5xx, rate limit, timeout, connection.
+    A single OpenAI 500 was taking down every tier and surfacing as a
+    misleading 'not found in Indian literature'."""
+    status = (getattr(e, "status_code", None)
+              or getattr(getattr(e, "response", None), "status_code", None))
+    if status in (408, 409, 429, 500, 502, 503, 504):
+        return True
+    name = type(e).__name__
+    return any(k in name for k in ("Timeout", "Connection", "InternalServerError",
+                                   "ServiceUnavailable", "RateLimit", "APIError"))
+
+
+def _retry(fn, tries: int = 3):
+    """Retry a provider call on transient errors with a short linear backoff."""
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:
+            if i == tries - 1 or not _is_transient(e):
+                raise
+            time.sleep(0.6 * (i + 1))
+
+
 def _openai_grounded(client, model, system, messages, domains, max_uses):
     """Tier 2 via OpenAI Responses API + web_search with domain filters.
 
@@ -728,9 +752,18 @@ def _openai_plain(client, model, system, messages) -> str:
     convo = "\n\n".join(
         f"{m['role'].upper()}: {m['content'] if isinstance(m['content'], str) else ''}"
         for m in messages)
-    resp = client.responses.create(model=model, instructions=system,
-                                   input=convo, max_output_tokens=1024)
-    return _strip_md_links(getattr(resp, "output_text", "") or "")
+
+    def _call():
+        # 3000, not 1024: gpt-5.x are reasoning models that spend output tokens
+        # on internal reasoning first, so a small budget returns status=incomplete
+        # with empty output_text — which silently produced a not-found.
+        r = client.responses.create(model=model, instructions=system,
+                                    input=convo, max_output_tokens=3000)
+        text = getattr(r, "output_text", "") or ""
+        if getattr(r, "status", "") == "incomplete" and not text.strip():
+            raise RuntimeError("tier3 truncated by token budget")
+        return text
+    return _strip_md_links(_retry(_call))
 
 
 def _parse_followups(text: str) -> tuple[str, list[str]]:
@@ -800,10 +833,10 @@ def _grounded_answer(model: str, system: str, msgs: list[dict],
     prov = provider_of(model)
     client = _client(model)
     if prov == "openai":
-        text, citations = _openai_grounded(client, model, system, msgs,
-                                           domains, max_uses)
+        text, citations = _retry(lambda: _openai_grounded(
+            client, model, system, msgs, domains, max_uses))
         return text, citations, model, False
-    resp = _run_with_pause_turn(
+    resp = _retry(lambda: _run_with_pause_turn(
         client, model=model, max_tokens=2048,
         thinking={"type": "adaptive"},
         output_config={"effort": effort},
@@ -812,7 +845,7 @@ def _grounded_answer(model: str, system: str, msgs: list[dict],
         tools=[{"type": "web_search_20260209", "name": "web_search",
                 "max_uses": max_uses, "allowed_domains": domains}],
         messages=msgs,
-    )
+    ))
     segments, citations, plain = _extract_answer(resp)
     return plain, citations, resp.model, resp.stop_reason == "refusal"
 
@@ -1091,14 +1124,14 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                     plain = _openai_plain(t3_client, t3_model, TIER3_SYSTEM, msgs)
                     used = t3_model
                 else:
-                    t3 = t3_client.messages.create(
+                    t3 = _retry(lambda: t3_client.messages.create(
                         model=t3_model, max_tokens=1024,
                         thinking={"type": "adaptive"},
                         output_config={"effort": effort},
                         system=[{"type": "text", "text": TIER3_SYSTEM,
                                  "cache_control": {"type": "ephemeral"}}],
                         messages=msgs,
-                    )
+                    ))
                     used = t3.model
                     if t3.stop_reason == "refusal":
                         fell(3, "provider_refusal")
@@ -1126,6 +1159,20 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
                 })
 
         result["latency_ms"] = int((time.time() - started) * 1000)
+
+        # A not-found caused by the provider erroring (a 500 on every call after
+        # retries) is NOT "not found in the literature" — it's a service failure,
+        # and the clinician must be told to retry, not that their question is
+        # uncovered. Distinguish the two by looking at what actually failed.
+        if result.get("status") == "not_found" and falls:
+            # Every fall is either a provider error or its downstream empty_answer,
+            # and at least one is a genuine provider error → the service failed,
+            # this is not a genuine "no source covers it".
+            reasons = [f["reason"] for f in falls]
+            if (any("generation_failed" in r for r in reasons)
+                    and all("generation_failed" in r or r == "empty_answer"
+                            for r in reasons)):
+                result["withheld_reason"] = "service_error"
 
         # Invariant (regression guard for the "refusal behind a Grounded badge"
         # bug): a tiered response must carry real content, and a grounded tier
