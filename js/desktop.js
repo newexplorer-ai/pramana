@@ -659,7 +659,7 @@
           </div>
         </div>
         <p class="t3-prose">${esc(res.answer_text||'').replace(/\n/g,'<br>')}</p>
-        <div class="t3-warn">This answer is <b style="font-weight:600;">not grounded in Indian medical literature.</b> It carries no citation and has not passed the groundedness check. Verify against a primary source before any clinical use.</div>
+        <div class="t3-warn">This answer is <b style="font-weight:600;">not grounded in the medical literature.</b> It carries no citation and comes from the model's general knowledge. Verify against a primary source before any clinical use.</div>
         <div class="act-row" style="margin-top:16px;">
           <span class="act" data-fb="up">${svg(I.like,{w:16,sw:1.7})}</span>
           <span class="act" data-fb="down">${svg(I.like,{w:16,sw:1.7,style:'transform:scaleY(-1)'})}</span>
