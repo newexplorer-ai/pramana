@@ -210,13 +210,14 @@ function routeQuery(raw){
 /* Home screen affordances (Screen 2). */
 const HOME = {
   chips:[
-    {icon:'file', label:'Ask about first-line therapy', q:'First-line management of type 2 diabetes in adults?'},
-    {icon:'chart', label:'Check NLEM dosing', q:'First-line management of type 2 diabetes in adults?'},
-    {icon:'plus', label:'Find the ICMR guideline', q:'Current ICMR advisory on dengue fluid management?'},
+    {icon:'file', label:'Compare Indian & international guidance', q:'How does Indian guidance on SGLT2 inhibitors as add-on therapy in type 2 diabetes compare with international guidelines?'},
+    {icon:'chart', label:'Check a drug dose', q:'Dosing of amoxicillin-clavulanate for community-acquired pneumonia in adults, and adjustment in renal impairment'},
+    {icon:'plus', label:'Weigh the evidence', q:'What is the evidence linking intradialytic hypotension to arteriovenous access thrombosis in haemodialysis?'},
   ],
   suggests:[
-    'First-line management of type 2 diabetes in adults?',
-    'Empirical antibiotics for community-acquired pneumonia in India',
-    'NLEM recommended dosing for oral amoxicillin in children',
+    'Fluid management in dengue with warning signs — what do ICMR and WHO recommend?',
+    'First-line antihypertensive in a patient with chronic kidney disease and type 2 diabetes',
+    'Empirical antibiotics for hospital-acquired pneumonia given Indian antimicrobial resistance patterns',
+    'DOAC versus warfarin for stroke prevention in non-valvular atrial fibrillation',
   ],
 };

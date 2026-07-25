@@ -389,8 +389,8 @@
     convoScroll.classList.remove('t3-bg');
     convo.innerHTML = `
       <div class="ask-state">
-        <h2>Ask a question grounded<br>in Indian medical literature</h2>
-        <div class="ask-sub">Every answer is traceable to ICMR, MoHFW, the NLEM, and peer-reviewed Indian journals.</div>
+        <h2>Ask a question grounded<br>in medical literature</h2>
+        <div class="ask-sub">Every answer is traceable to reliable Indian and international medical sources.</div>
         <div class="home-privacy" style="margin-top:12px;">${svg(I.shield,{w:12,stroke:'#35694e'})}DPDP-conscious · do not enter patient-identifiable information</div>
         <div class="chips" style="margin-top:26px;">
           ${HOME.chips.map(c=>`<button class="chip" data-q="${esc(c.q)}">${svg(I[c.icon]||I.file,{w:13})}${c.label}</button>`).join('')}
