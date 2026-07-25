@@ -634,6 +634,38 @@ check("provider outage → status not_found", r12["status"] == "not_found",
 check("provider outage → withheld_reason service_error",
       r12.get("withheld_reason") == "service_error", str(r12.get("withheld_reason")))
 
+# --------------------------------------------------------------- test 13
+# Auth + cap correctness. Both compare ISO-8601 timestamps against SQLite
+# time strings, which mis-sorted before ('T' > ' ') — pin the fixed behaviour.
+print("\n13. Daily-cap window and session expiry")
+import datetime as _dt
+_now = _dt.datetime.now(_dt.timezone.utc)
+_email = "k.prasad.iitr@gmail.com"
+for _h in (2, 25, 40):
+    A.q("""INSERT INTO query_logs(query_id,user_email,query_text,tier,status,
+           high_stakes,latency_ms,created_at) VALUES(?,?,?,?,?,?,?,?)""",
+        (f"capprobe{_h}", _email, "x", 2, "answered", 0, 100,
+         (_now - _dt.timedelta(hours=_h)).isoformat()))
+_counted = A.q("""SELECT COUNT(*) n FROM query_logs WHERE user_email=?
+                  AND query_id LIKE 'capprobe%'
+                  AND created_at > strftime('%Y-%m-%dT%H:%M:%S','now','-1 day')""",
+               (_email,))[0]["n"]
+check("daily cap counts only the last 24h", _counted == 1, f"counted={_counted}")
+
+_tok = client.post("/api/auth/demo", json={"email": _email}).json()["token"]
+_H = {"Authorization": f"Bearer {_tok}"}
+check("fresh session is valid", client.get("/api/me", headers=_H).status_code == 200)
+A.q("UPDATE auth_sessions SET created_at=? WHERE token=?",
+    ((_now - _dt.timedelta(days=31)).isoformat(), _tok))
+check("session past auth.session_days is rejected",
+      client.get("/api/me", headers=_H).status_code == 401)
+A.q("UPDATE auth_sessions SET created_at=? WHERE token=?",
+    ((_now - _dt.timedelta(days=29)).isoformat(), _tok))
+check("session inside auth.session_days still valid",
+      client.get("/api/me", headers=_H).status_code == 200)
+check("removed library endpoints are gone",
+      client.get("/api/library", headers=_H).status_code == 404)
+
 print("\n" + "=" * 60)
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S):")

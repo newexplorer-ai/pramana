@@ -158,6 +158,8 @@ SEED_CONFIG = [
     ("search.dual_classifier", "true", "true",
      "Dual mode: run the retrieval-plan classifier. Off = always search both pools.", 0),
     ("cost.daily_user_cap", "40", "40", "Per-clinician query cap per day.", 0),
+    ("auth.session_days", "30", "30",
+     "Days a sign-in stays valid before the user must sign in again.", 0),
     ("context.max_turns", "6", "6", "Conversation depth resent per request.", 0),
 ]
 
@@ -267,8 +269,15 @@ def current_user(authorization: str = Header(default="")) -> dict:
     token = authorization.removeprefix("Bearer ").strip()
     if not token:
         raise HTTPException(401, "not_authenticated")
+    # Sessions expire: auth.session_days recorded created_at but never read it,
+    # so a token was valid forever. Same ISO-vs-SQLite comparison caveat as the
+    # daily cap — use strftime so the formats match.
+    days = int(cfg("auth.session_days", "30"))
     rows = q("""SELECT u.* FROM auth_sessions s JOIN allowed_users u
-                ON u.email = s.email WHERE s.token=?""", (token,))
+                ON u.email = s.email
+                WHERE s.token=?
+                  AND s.created_at > strftime('%Y-%m-%dT%H:%M:%S','now',?)""",
+             (token, f"-{days} days"))
     if not rows or not rows[0]["enabled"]:
         raise HTTPException(401, "session_invalid")
     u = rows[0]
@@ -875,10 +884,15 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
     if not query:
         raise HTTPException(400, "empty_query")
 
-    # per-user daily cap (PRD cost guardrail)
+    # Per-user daily cap (PRD cost guardrail). created_at is ISO-8601 with a
+    # 'T' separator; SQLite's datetime() returns a space-separated string, and
+    # 'T' (0x54) sorts above ' ' (0x20) — so a plain datetime() comparison
+    # counted queries older than 24h and capped heavy users hours early.
+    # strftime with the same layout compares like-for-like.
     cap = int(cfg("cost.daily_user_cap", "40"))
     used = q("""SELECT COUNT(*) n FROM query_logs WHERE user_email=?
-                AND created_at > datetime('now','-1 day')""", (user["email"],))[0]["n"]
+                AND created_at > strftime('%Y-%m-%dT%H:%M:%S','now','-1 day')""",
+             (user["email"],))[0]["n"]
     if used >= cap:
         raise HTTPException(429, "daily_cap_reached")
 
@@ -1295,28 +1309,10 @@ def conversation_get(conversation_id: str, user: dict = Depends(current_user)):
     return {"id": conversation_id, "title": owner[0]["title"], "turns": turns}
 
 
-@app.get("/api/library")
-def library_list(user: dict = Depends(current_user)):
-    rows = q("""SELECT id,title,query,saved_at FROM saved_conversations
-                WHERE user_email=? ORDER BY id DESC""", (user["email"],))
-    return [dict(r) for r in rows]
-
-
-@app.post("/api/library")
-def library_save(body: dict, user: dict = Depends(current_user)):
-    q("""INSERT OR IGNORE INTO saved_conversations
-         (user_email,title,conversation_id,query,saved_at) VALUES(?,?,?,?,?)""",
-      (user["email"], str(body.get("title", ""))[:120],
-       body.get("conversation_id") or str(uuid.uuid4()),
-       str(body.get("query", ""))[:500], today()))
-    return {"ok": True}
-
-
-@app.delete("/api/library/{item_id}")
-def library_delete(item_id: int, user: dict = Depends(current_user)):
-    q("DELETE FROM saved_conversations WHERE id=? AND user_email=?",
-      (item_id, user["email"]))
-    return {"ok": True}
+# The manual Save/Library flow was removed from the UI — auto-saved
+# conversation history replaced it. The /api/library endpoints and the
+# saved_conversations table went with it; existing rows are left in place
+# rather than dropped, since dropping a table in SQLite is irreversible.
 
 
 # ---------------------------------------------------------------- public: sources & access
