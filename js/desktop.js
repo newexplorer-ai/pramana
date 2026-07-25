@@ -1,5 +1,5 @@
 /* ============================================================
-   Pramana — desktop app controller
+   Praman — desktop app controller
    Canvases: App Ask · App Conversation (Tier 1/2/3).
    Views: ask · conversation · library · sources.
    PRD decisions applied: D2 library
@@ -613,7 +613,7 @@
     // environment variable. The raw detail stays in the collapsed line below
     // for whoever is debugging.
     const friendly = /credentials|authentication method|api_key/i.test(detail||'')
-      ? 'Pramana is not configured to answer questions yet. Please contact your administrator.'
+      ? 'Praman is not configured to answer questions yet. Please contact your administrator.'
       : /daily_cap/.test(detail||'') ? 'You have reached the daily query cap for the beta.'
       : 'Something went wrong answering this question.';
     if(!activeTurn) newTurn();

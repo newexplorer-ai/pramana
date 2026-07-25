@@ -1,4 +1,4 @@
-# Pramana allowlist — for shortening
+# Praman allowlist — for shortening
 
 Live export from production, 322 enabled domains.
 

@@ -1,5 +1,5 @@
 /* ============================================================
-   Pramana — flow controller
+   Praman — flow controller
    State machine over the 7 canvas screens:
    consent → home → retrieving → answer(tier 1/2/3) → citation
    ============================================================ */
@@ -67,7 +67,7 @@
       <div class="consent">
         <div class="consent-badge">${svg(I.shield,{w:22,sw:1.7})}</div>
         <h1>Before you begin</h1>
-        <p class="consent-lead">Pramana is a <b>literature reference tool</b> for healthcare professionals. It surfaces answers grounded in Indian medical literature with sentence-level citations. It is <b>not a diagnostic or treatment-decision tool</b> and does not replace clinical judgment.</p>
+        <p class="consent-lead">Praman is a <b>literature reference tool</b> for healthcare professionals. It surfaces answers grounded in Indian medical literature with sentence-level citations. It is <b>not a diagnostic or treatment-decision tool</b> and does not replace clinical judgment.</p>
         <ul class="consent-list">
           <li><span class="tick">${I.tick}</span>For English-literate healthcare professionals</li>
           <li><span class="tick">${I.tick}</span>Every claim links to its exact source passage</li>
@@ -77,7 +77,7 @@
           <span class="checkbox">${svg(I.check,{w:12,sw:3})}</span>
           I understand and accept these terms
         </div>
-        <button class="btn btn-dark" id="continueBtn" disabled>Continue to Pramana</button>
+        <button class="btn btn-dark" id="continueBtn" disabled>Continue to Praman</button>
       </div>`);
 
     const check = document.getElementById('consentCheck');

@@ -1,5 +1,5 @@
 /* ============================================================
-   Pramana — demo content & response-routing data
+   Praman — demo content & response-routing data
    Mirrors the 3 response tiers from the PRD (§6.2) and the
    answer surfaces drawn in the User Flow canvas.
    In production this comes from the FastAPI orchestrator

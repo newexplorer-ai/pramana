@@ -1,4 +1,4 @@
-# How Pramana answers one question
+# How Praman answers one question
 
 A trace of exactly what happens between a clinician pressing **Send** and an
 answer appearing, as the system runs today. References name functions in

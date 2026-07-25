@@ -1,5 +1,5 @@
 /* ============================================================
-   Pramana — API client.
+   Praman — API client.
    When the FastAPI backend is reachable (same origin, /api/*),
    the app runs in LIVE mode: real auth, real answers, server
    allowlist. When it isn't (e.g. the GitHub Pages static demo),

@@ -1,5 +1,5 @@
 /* ============================================================
-   Pramana — marketing site (Home canvas)
+   Praman — marketing site (Home canvas)
    FAQ accordion + request-access flow. The hero ask input
    routes unauthenticated visitors to Request access — it never
    runs real queries (cost/abuse guard, PRD suggestion).

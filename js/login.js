@@ -1,5 +1,5 @@
 /* ============================================================
-   Pramana — login screen controller
+   Praman — login screen controller
    Real Google Sign-In when GOOGLE_CLIENT_ID is set.
 
    The allowlist is NEVER enumerated here. A login screen is
@@ -68,16 +68,16 @@
     if(reason === 'not_allowlisted'){
       showAlert('deny',
         `<b>Not on the beta allowlist.</b> <span class="mono">${email}</span> isn’t approved yet. ` +
-        `Pramana is limited to verified clinicians during the closed beta. ` +
+        `Praman is limited to verified clinicians during the closed beta. ` +
         `<a href="index.html#request">Request access →</a>`);
     } else if(reason === 'disabled'){
       showAlert('deny',
         `<b>Access suspended.</b> <span class="mono">${email}</span> is on the allowlist but currently disabled. ` +
-        `Contact your Pramana administrator.`);
+        `Contact your Praman administrator.`);
     } else if(reason === 'unverified'){
       showAlert('deny', '<b>Unverified Google account.</b> Verify your email with Google, then try again.');
     } else if(reason === 'demo_password_required'){
-      showAlert('deny', '<b>Wrong access code.</b> Ask your Pramana administrator for the beta access code.');
+      showAlert('deny', '<b>Wrong access code.</b> Ask your Praman administrator for the beta access code.');
     } else {
       showAlert('deny', '<b>Sign-in failed.</b> Please try again.');
     }
@@ -101,12 +101,12 @@
     if(result.reason === 'not_allowlisted'){
       showAlert('deny',
         `<b>Not on the beta allowlist.</b> <span class="mono">${email}</span> isn’t approved yet. ` +
-        `Pramana is limited to verified clinicians during the closed beta. ` +
+        `Praman is limited to verified clinicians during the closed beta. ` +
         `<a href="index.html#request">Request access →</a>`);
     } else if(result.reason === 'disabled'){
       showAlert('deny',
         `<b>Access suspended.</b> <span class="mono">${email}</span> is on the allowlist but currently disabled. ` +
-        `Contact your Pramana administrator.`);
+        `Contact your Praman administrator.`);
     } else if(result.reason === 'unverified'){
       showAlert('deny', '<b>Unverified Google account.</b> Verify your email with Google, then try again.');
     } else {

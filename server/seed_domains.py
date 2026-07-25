@@ -1,4 +1,4 @@
-"""Pramana — curated Indian medical domain allowlist.
+"""Praman — curated Indian medical domain allowlist.
 
 Three bands, from the editorial review:
 
@@ -245,7 +245,7 @@ _INDIAN: list[tuple[str, str, bool]] = [
 # ============================================================================
 # INTERNATIONAL — searched only when Indian sources do not answer.
 #
-# Pramana's promise is that an answer is traceable to Indian literature, and
+# Praman's promise is that an answer is traceable to Indian literature, and
 # the PRD's premise is that general models wrongly default to Western guidance
 # whose dosing, drug availability and epidemiology may not match Indian
 # practice. These sources are therefore a labelled fallback, never mixed

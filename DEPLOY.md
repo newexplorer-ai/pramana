@@ -1,7 +1,7 @@
-# Deploying Pramana to `pramana.heybolo.de`
+# Deploying Praman to `pramana.heybolo.de`
 
 `heybolo.de` itself is already taken — it serves the Bolo app from the Vercel
-project `german1`. Pramana therefore goes on the **`pramana.heybolo.de`**
+project `german1`. Praman therefore goes on the **`pramana.heybolo.de`**
 subdomain, and it is **not** deployed to Vercel: the orchestrator is a
 long-running FastAPI process with a SQLite database, and Vercel's serverless
 functions have an ephemeral filesystem (every sign-in, allowlist edit, and

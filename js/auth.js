@@ -1,5 +1,5 @@
 /* ============================================================
-   Pramana — authentication & beta allowlist
+   Praman — authentication & beta allowlist
    ------------------------------------------------------------
    Google Sign-In (GIS) proves identity; an admin-maintained
    allowlist decides who may enter. Roles: clinician < editor < admin.

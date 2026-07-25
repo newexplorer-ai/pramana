@@ -1,5 +1,5 @@
 /* ============================================================
-   Pramana — admin portal controller (Admin Portal canvas)
+   Praman — admin portal controller (Admin Portal canvas)
    Four views: allowlist · config · keys · audit.
    Mutations (toggle, add domain, rotate) append audit rows,
    mirroring the Postgres-trigger audit design read-only in v1.

@@ -1,5 +1,5 @@
 """
-Pramana orchestrator — FastAPI backend for the two-tier MVP.
+Praman orchestrator — FastAPI backend for the two-tier MVP.
 
 Tiers (Tier 1/corpus was cut from scope):
   Tier 2  — grounded web answer: Anthropic web_search server tool restricted
@@ -50,7 +50,7 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 # demo login additionally requires the shared beta access code.
 DEMO_PASSWORD = os.environ.get("PRAMANA_DEMO_PASSWORD", "")
 
-app = FastAPI(title="Pramana API")
+app = FastAPI(title="Praman API")
 
 # ---------------------------------------------------------------- database
 
@@ -422,7 +422,7 @@ _T2_RULES = (
 
 def tier2_system(region: str) -> str:
     """Tier 2 system prompt for the pool actually being searched."""
-    return ("You are Pramana, a literature reference tool for Indian "
+    return ("You are Praman, a literature reference tool for Indian "
             "healthcare professionals. Answer the clinical question using ONLY "
             "the web search results. "
             f"{_T2_POOL.get(region, _T2_POOL['IN'])}\n\n{_T2_RULES}")
@@ -485,7 +485,7 @@ def _retrieval_plan(query: str) -> str:
 # practice, but international evidence is always shown where it exists. The
 # formatting rules mirror Tier 2 so the UI renders it and follow-ups parse.
 COMPOSE_SYSTEM = (
-    "You are Pramana, composing ONE answer for a doctor practising in India from "
+    "You are Praman, composing ONE answer for a doctor practising in India from "
     "two drafts of the same question: DRAFT A from Indian sources and DRAFT B "
     "from international sources. Use ONLY facts present in the drafts — introduce "
     "nothing new and invent no citations.\n"
@@ -555,7 +555,7 @@ def _compose(query: str, indian, intl):
 
 
 TIER3_SYSTEM = (
-    "You are Pramana's unverified fallback. The vetted literature pool — "
+    "You are Praman's unverified fallback. The vetted literature pool — "
     "Indian sources and international guideline sources — did not cover this "
     "question, so you are answering from general knowledge. Rules:\n"
     "1. Begin the substance of the answer with the word 'Generally' or "

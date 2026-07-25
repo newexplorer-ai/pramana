@@ -1,4 +1,4 @@
-# Pramana — two-tier MVP (frontend + backend)
+# Praman — two-tier MVP (frontend + backend)
 
 ## Backend (`server/`)
 
@@ -53,7 +53,7 @@ flow (`mobile.html`). PRD open decisions applied in the prototype:
 
 
 Cited medical Q&A grounded in Indian medical literature. This is a front-end
-implementation of the **Pramana User Flow** design canvas: the core answer
+implementation of the **Praman User Flow** design canvas: the core answer
 journey from first-run consent through the three response tiers, with a
 source-grouped, inline-cited answer surface.
 
