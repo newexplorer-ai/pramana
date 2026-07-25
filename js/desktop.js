@@ -19,7 +19,6 @@
   const qform      = document.getElementById('qform');
   const qinput     = document.getElementById('qinput');
   const tierStrip  = document.getElementById('tierStrip');
-  const saveBtn    = document.getElementById('saveBtn');
 
   /* ---------- icons ---------- */
   const I = {
@@ -71,11 +70,6 @@
      this session's real recents. */
   const LIVE = { convId:null, recents:[], queryId:null };
   const isLive = () => PRAMANA_API.on;
-
-  /* ---------- library persistence (D2: saved conversations only) ---------- */
-  const LIB_KEY = 'pramana_library';
-  const libRead  = () => { try { return JSON.parse(localStorage.getItem(LIB_KEY)) || []; } catch(e){ return []; } };
-  const libWrite = list => localStorage.setItem(LIB_KEY, JSON.stringify(list));
 
   // Server-backed chat history, so past conversations survive a reload or a new
   // session. Refreshed on boot and after every answer.
@@ -137,7 +131,7 @@
   }
 
   function setNav(mode){
-    document.querySelectorAll('#navAsk,#navLibrary').forEach(el=>el&&el.classList.remove('active'));
+    document.querySelectorAll('#navAsk').forEach(el=>el&&el.classList.remove('active'));
     const el = document.getElementById('nav'+mode.charAt(0).toUpperCase()+mode.slice(1));
     if(el) el.classList.add('active');
   }
@@ -417,86 +411,6 @@
     qinput.focus();
   }
 
-  /* ============================================================
-     Library (D2: saved conversations only)
-     ============================================================ */
-  async function renderLibrary(){
-    clearTimers();
-    activeRecent = null; current = null;
-    mainTitle.textContent = 'Library';
-    setNav('library'); setStrip(null);
-    convoScroll.classList.remove('t3-bg');
-    let items;
-    if(isLive()){
-      try { items = await PRAMANA_API.get('/api/library'); } catch(e){ items = []; }
-      items = items.map(it => ({ title: it.title, query: it.query, savedAt: it.saved_at, id: it.id }));
-    } else {
-      items = libRead();
-    }
-    convo.innerHTML = `
-      <div class="page-title" style="margin-top:6px;">Library</div>
-      <div class="page-lead">Conversations you saved with the <b style="font-weight:600;">Save</b> action. Saved answers keep their tier, citations, and dates.</div>
-      ${items.length ? `
-      <div class="lib-list">
-        ${items.map((it,i)=>`
-          <div class="lib-item" data-q="${esc(it.query)}" data-t="${esc(it.title)}">
-            <div class="lib-main">
-              <div class="lib-title">${esc(it.title)}</div>
-              <div class="lib-meta">Saved ${esc(it.savedAt)}</div>
-            </div>
-            <button class="lib-remove" data-i="${i}" title="Remove from library">×</button>
-          </div>`).join('')}
-      </div>`
-      : `
-      <div class="lib-empty">
-        ${svg(I.book,{w:20,sw:1.6,stroke:'#a5a29a'})}
-        <div><b>Nothing saved yet.</b> Open a conversation and use <b>Save</b> in the top bar — it will appear here.</div>
-      </div>`}`;
-    convoScroll.scrollTop = 0;
-    railTitle.textContent = 'Library';
-    railMode.textContent = `${items.length} saved`;
-    railBody.innerHTML = `<div class="rail-note">Saved conversations are private to your account and stored in-region (ap-south-1).</div>`;
-    renderRecents();
-
-    convo.querySelectorAll('.lib-item').forEach(el =>
-      el.addEventListener('click', e => {
-        if(e.target.classList.contains('lib-remove')) return;
-        const query = el.getAttribute('data-q');
-        if(isLive()){ LIVE.convId = null; askLive(query); }   // reopen = re-ask
-        else openConversation(query, el.getAttribute('data-t'), {animate:false});
-      }));
-    convo.querySelectorAll('.lib-remove').forEach(el =>
-      el.addEventListener('click', async () => {
-        if(isLive()){
-          const item = items[+el.getAttribute('data-i')];
-          try { await PRAMANA_API.del('/api/library/' + item.id); } catch(e){}
-        } else {
-          const local = libRead(); local.splice(+el.getAttribute('data-i'),1); libWrite(local);
-        }
-        renderLibrary();
-      }));
-  }
-
-  async function saveCurrent(){
-    if(!current){ return; }
-    if(isLive()){
-      try {
-        await PRAMANA_API.post('/api/library',
-          { title: current.title, query: current.query, conversation_id: LIVE.convId });
-        saveBtn.textContent = 'Saved ✓';
-        setTimeout(()=>{ saveBtn.textContent = 'Save'; }, 1800);
-      } catch(e){}
-      return;
-    }
-    const items = libRead();
-    if(items.some(it => it.query === current.query)){ saveBtn.textContent = 'Saved ✓'; return; }
-    const d = new Date();
-    items.unshift({ title: current.title, query: current.query,
-      savedAt: `${d.getDate()} ${d.toLocaleString('en',{month:'short'})} ${d.getFullYear()}` });
-    libWrite(items);
-    saveBtn.textContent = 'Saved ✓';
-    setTimeout(()=>{ saveBtn.textContent = 'Save'; }, 1800);
-  }
 
   /* The Sources screen was removed from the v1 UI (product call, Jul 2026).
      The /api/sources endpoint and the admin allowlist remain untouched. */
@@ -851,9 +765,7 @@
   qform.addEventListener('submit', e => { e.preventDefault(); submit(qinput.value); });
   document.getElementById('newQBtn').addEventListener('click', renderAsk);
   document.getElementById('navAsk').addEventListener('click', renderAsk);
-  document.getElementById('navLibrary').addEventListener('click', renderLibrary);
   document.getElementById('brandBtn').addEventListener('click', renderAsk);
-  saveBtn.addEventListener('click', saveCurrent);
 
   /* ---------- signed-in identity ---------- */
   (function renderMe(){
