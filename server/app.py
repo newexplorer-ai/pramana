@@ -1253,13 +1253,23 @@ def suggest_source(body: dict, user: dict = Depends(current_user)):
 @app.get("/api/conversations")
 def conversations_list(user: dict = Depends(current_user)):
     """The user's own chat history, most-recent first — auto-saved, no starring
-    needed. Powers the Recents list across sessions."""
+    needed. Deduped by question so the same query asked repeatedly shows once
+    (keeping the most recent thread), which otherwise floods the Recents list."""
     rows = q("""SELECT c.id, c.title, MAX(t.created_at) AS last_at,
                        COUNT(CASE WHEN t.role='user' THEN 1 END) AS turns
                 FROM conversations c JOIN turns t ON t.conversation_id = c.id
                 WHERE c.user_email = ?
-                GROUP BY c.id ORDER BY last_at DESC LIMIT 40""", (user["email"],))
-    return [dict(r) for r in rows]
+                GROUP BY c.id ORDER BY last_at DESC""", (user["email"],))
+    seen, out = set(), []
+    for r in rows:
+        key = (r["title"] or "").strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(r))
+        if len(out) >= 30:
+            break
+    return out
 
 
 @app.get("/api/conversations/{conversation_id}")
