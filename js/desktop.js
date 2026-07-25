@@ -77,22 +77,52 @@
   const libRead  = () => { try { return JSON.parse(localStorage.getItem(LIB_KEY)) || []; } catch(e){ return []; } };
   const libWrite = list => localStorage.setItem(LIB_KEY, JSON.stringify(list));
 
+  // Server-backed chat history, so past conversations survive a reload or a new
+  // session. Refreshed on boot and after every answer.
+  async function loadConversations(){
+    if(!isLive()) return;
+    try {
+      const list = await PRAMANA_API.get('/api/conversations');
+      LIVE.recents = list.map(c => ({ convId: c.id, title: c.title || 'Untitled' }));
+    } catch(e){ /* keep whatever we had */ }
+    renderRecents();
+  }
+
+  // Reopen a past conversation as a full thread (every turn), not just the last
+  // answer, and set convId so a follow-up continues it with context.
+  async function openConversationById(convId){
+    let data;
+    try { data = await PRAMANA_API.get('/api/conversations/' + encodeURIComponent(convId)); }
+    catch(e){ return; }
+    clearTimers();
+    setNav('convo'); setStrip(null);
+    LIVE.convId = convId;
+    convo.innerHTML = '';
+    current = { title: data.title, query: data.title };
+    mainTitle.textContent = data.title || 'Conversation';
+    let lastQuery = '';
+    (data.turns || []).forEach(t => {
+      if(t.role === 'user'){ lastQuery = t.content; return; }
+      newTurn();
+      const res = t.result || { tier: t.tier, status: t.tier ? 'answered' : 'not_found',
+                                answer_text: t.content, citations: [], segments: [],
+                                sources_searched: [], retrieved_at: '' };
+      renderLiveAnswer(res, lastQuery);
+    });
+    convo.scrollTop = 0;
+    renderRecents();
+  }
+
   function renderRecents(){
     if(isLive()){
       recentsEl.innerHTML = LIVE.recents.length
         ? LIVE.recents.map((r,i) =>
             `<button class="recent ${r.convId===LIVE.convId?'active':''}" data-i="${i}" title="${esc(r.title)}">${esc(r.title)}</button>`).join('')
-        : `<div class="rail-note" style="padding:4px 10px;">Questions you ask appear here.</div>`;
+        : `<div class="rail-note" style="padding:4px 10px;">Your past questions appear here.</div>`;
       recentsEl.querySelectorAll('.recent').forEach(el =>
         el.addEventListener('click', () => {
           const r = LIVE.recents[+el.getAttribute('data-i')];
-          LIVE.convId = r.convId;
-          // Opening a past conversation resets the thread to that turn. (Only the
-          // latest turn is cached client-side; full-thread reload is future work.)
-          convo.innerHTML = ''; newTurn();
-          current = { title: truncate(r.query,60), query: r.query };
-          mainTitle.textContent = current.title;
-          renderLiveAnswer(r.result, r.query);
+          openConversationById(r.convId);
         }));
       return;
     }
@@ -520,10 +550,8 @@
         result: d => {
           LIVE.convId = d.conversation_id;
           LIVE.queryId = d.query_id;
-          LIVE.recents = [{ title: truncate(query,40), query,
-                            convId: d.conversation_id, result: d },
-                          ...LIVE.recents.filter(r => r.convId !== d.conversation_id)].slice(0,8);
           renderLiveAnswer(d, query);
+          loadConversations();          // refresh Recents from the server
         },
       });
     } catch(e){ renderLiveError(query, e.message); }
@@ -859,10 +887,10 @@
     });
   }
 
-  // boot — live mode starts at Ask (no seeded conversations exist)
+  // boot — live mode starts at Ask and loads the user's saved chat history
   (async () => {
     await PRAMANA_API.ready;
-    if(isLive()) renderAsk();
+    if(isLive()){ renderAsk(); loadConversations(); }
     else openConversation(RECENTS[0].query, RECENTS[0].title, {animate:false});
   })();
 })();

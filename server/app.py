@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS conversations(
   id TEXT PRIMARY KEY, user_email TEXT, title TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS turns(
   id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT, role TEXT,
-  content TEXT, tier INTEGER, created_at TEXT);
+  content TEXT, tier INTEGER, result_json TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS query_logs(
   query_id TEXT PRIMARY KEY, user_email TEXT, conversation_id TEXT,
   query_text TEXT, tier INTEGER, status TEXT, high_stakes INTEGER,
@@ -182,6 +182,11 @@ def _migrate() -> None:
         q("ALTER TABLE allowlist_domains ADD COLUMN region TEXT NOT NULL DEFAULT 'IN'")
     if "priority" not in dcols:
         q("ALTER TABLE allowlist_domains ADD COLUMN priority INTEGER NOT NULL DEFAULT 9999")
+    # Full answer payload per assistant turn, so a conversation can be reloaded
+    # with its citations intact across sessions — not just the plain text.
+    tcols = {r["name"] for r in q("PRAGMA table_info(turns)")}
+    if "result_json" not in tcols:
+        q("ALTER TABLE turns ADD COLUMN result_json TEXT")
 
 
 def init_db() -> None:
@@ -397,6 +402,12 @@ _T2_RULES = (
     "partial: report what those sources do say and note the limit. Do not "
     "discard usable sources — a partial grounded answer is more useful than a "
     "refusal.\n"
+    "8b. If the question asks for MULTIPLE papers/studies/sources (\"several\", "
+    "\"a few papers\", \"list studies\"), present them as a numbered list of "
+    "DISTINCT works from DIFFERENT sources where the search returned them, one "
+    "line each with the title and publishing body. If only one distinct work "
+    "was retrievable, give it and state plainly that it was the only one found "
+    "in this search — do not pad with repeated citations of the same paper.\n"
     "9. If the sources do NOT substantively answer the question, do not compose "
     "an answer, do not describe what you searched for, and do not explain what "
     "you could not find. Reply with exactly: NO_SUBSTANTIVE_ANSWER\n"
@@ -852,7 +863,8 @@ def _grounded_answer(model: str, system: str, msgs: list[dict],
 
 def _load_history(conversation_id: str) -> list[dict]:
     max_turns = int(cfg("context.max_turns", "6"))
-    rows = q("""SELECT role, content FROM turns WHERE conversation_id=?
+    rows = q("""SELECT role, content FROM turns
+                WHERE conversation_id=? AND content != ''
                 ORDER BY id DESC LIMIT ?""", (conversation_id, max_turns))
     return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
@@ -1200,11 +1212,16 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
            json.dumps(falls) if falls else None,
            result.get("source_region"), result.get("pool_outcome"),
            result.get("indian_citations"), result.get("intl_citations"), now()))
-        q("INSERT INTO turns(conversation_id,role,content,tier,created_at) VALUES(?,?,?,?,?)",
-          (conversation_id, "user", query, None, now()))
-        if result.get("answer_text"):
-            q("INSERT INTO turns(conversation_id,role,content,tier,created_at) VALUES(?,?,?,?,?)",
-              (conversation_id, "assistant", result["answer_text"], result["tier"], now()))
+        q("""INSERT INTO turns(conversation_id,role,content,tier,result_json,created_at)
+             VALUES(?,?,?,?,?,?)""",
+          (conversation_id, "user", query, None, None, now()))
+        # Store the assistant turn always (even not-found) with the full result,
+        # so a reloaded thread shows exactly what the clinician saw. Empty-content
+        # turns are excluded from conversation history in _load_history.
+        q("""INSERT INTO turns(conversation_id,role,content,tier,result_json,created_at)
+             VALUES(?,?,?,?,?,?)""",
+          (conversation_id, "assistant", result.get("answer_text") or "",
+           result["tier"], json.dumps(result), now()))
 
         yield sse("result", result)
 
@@ -1232,6 +1249,41 @@ def suggest_source(body: dict, user: dict = Depends(current_user)):
 
 
 # ---------------------------------------------------------------- library (D2)
+
+@app.get("/api/conversations")
+def conversations_list(user: dict = Depends(current_user)):
+    """The user's own chat history, most-recent first — auto-saved, no starring
+    needed. Powers the Recents list across sessions."""
+    rows = q("""SELECT c.id, c.title, MAX(t.created_at) AS last_at,
+                       COUNT(CASE WHEN t.role='user' THEN 1 END) AS turns
+                FROM conversations c JOIN turns t ON t.conversation_id = c.id
+                WHERE c.user_email = ?
+                GROUP BY c.id ORDER BY last_at DESC LIMIT 40""", (user["email"],))
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/conversations/{conversation_id}")
+def conversation_get(conversation_id: str, user: dict = Depends(current_user)):
+    """Full thread for reload: every turn with its stored answer payload. Scoped
+    to the owner — another user's conversation_id returns 404."""
+    owner = q("SELECT user_email, title FROM conversations WHERE id=?",
+              (conversation_id,))
+    if not owner or owner[0]["user_email"] != user["email"]:
+        raise HTTPException(404, "not_found")
+    rows = q("""SELECT role, content, tier, result_json, created_at FROM turns
+                WHERE conversation_id=? ORDER BY id""", (conversation_id,))
+    turns = []
+    for r in rows:
+        t = {"role": r["role"], "content": r["content"], "tier": r["tier"],
+             "created_at": r["created_at"]}
+        if r["result_json"]:
+            try:
+                t["result"] = json.loads(r["result_json"])
+            except Exception:
+                pass
+        turns.append(t)
+    return {"id": conversation_id, "title": owner[0]["title"], "turns": turns}
+
 
 @app.get("/api/library")
 def library_list(user: dict = Depends(current_user)):
