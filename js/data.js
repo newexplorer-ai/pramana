@@ -148,7 +148,7 @@ const ANSWERS = {
     query:'Preferred biologic sequencing for refractory paediatric Crohn’s in Indian practice?',
     model:'Claude',
     prose:'Refractory paediatric Crohn’s disease is <b>generally</b> managed with escalation to anti-TNF biologics such as infliximab or adalimumab, with sequencing individualised to response, prior exposure, and tolerability. Where anti-TNF therapy fails, agents such as ustekinumab or vedolizumab may be considered. This reflects general practice and <b>may not match Indian guidelines, drug availability, or approved paediatric indications.</b>',
-    warn:'This answer is <b>not grounded in Indian medical literature.</b> It carries no citation and has not passed the groundedness check. Verify against a primary source before any clinical use.',
+    warn:'This answer is <b>not grounded in the medical literature.</b> It carries no citation and comes from the model rather than a cited source. Verify against a primary source before any clinical use.',
     sourcesChecked:['ICMR corpus','MoHFW STG','icmr.gov.in','nmji.in','ijmr.org.in'],
   },
 
@@ -158,7 +158,7 @@ const ANSWERS = {
     query:'',
     model:'Claude',
     prose:'No passage in the indexed Indian literature or on an allowlisted Indian domain matched this question. A general model can offer background information, but it <b>may not reflect Indian guidelines, drug availability, dosing conventions, or approved indications.</b>',
-    warn:'This answer is <b>not grounded in Indian medical literature.</b> Sources checked: curated corpus, allowlisted web. It carries no citation and has not passed the groundedness check — verify against a primary source before any clinical use.',
+    warn:'This answer is <b>not grounded in the medical literature.</b> It carries no citation and comes from the model rather than a cited source — verify against a primary source before any clinical use.',
     sourcesChecked:['ICMR corpus','MoHFW STG','icmr.gov.in','nmji.in','ijmr.org.in'],
   },
 
