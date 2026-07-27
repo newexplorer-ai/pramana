@@ -341,3 +341,33 @@ body.adminpage{background:#fff;background-image:none;overflow:hidden;}
   .cols-audit{grid-template-columns:100px 120px 1fr;}
   .cols-audit .cell-when{display:none;}
 }
+
+/* Phone: the admin sidebar becomes a drawer (see .drawer-btn/.scrim in
+   app.css), and the dense config tables drop their least-critical column so
+   the remaining ones stay legible instead of wrapping to five lines each. */
+@media (max-width:860px){
+  .admin-head{padding:0 14px;gap:10px;}
+  .admin-head .live-pip{display:none;}
+  .admin-head-l{flex-direction:column;align-items:flex-start;gap:0;}
+  .admin-sub{display:none;}
+  .admin-scroll{padding:18px 14px 40px;}
+  .add-form{padding:12px;gap:10px;}
+  .field.f-domain,.field.f-note,.field.f-region{flex:1 1 100%;min-width:0;}
+  .add-btn{width:100%;justify-content:center;}
+  /* Header cells are unclassed divs, so hide them positionally to match the
+     row cells being dropped — otherwise the header misaligns with the grid. */
+  .cols-domains{grid-template-columns:1fr 74px;}
+  .cols-domains .cell-note,
+  .tbl-head.cols-domains div:nth-child(2){display:none;}
+  /* Key | Value (Default and Last-changed already hidden at 900px). */
+  .cols-config{grid-template-columns:1fr 110px;}
+  .cols-config .cell-desc,
+  .tbl-head.cols-config div:nth-child(4){display:none;}
+  /* Actor | Action (When already hidden at 900px). */
+  .cols-audit{grid-template-columns:1fr 1fr;}
+  .cols-audit .cell-change,
+  .tbl-head.cols-audit div:nth-child(3){display:none;}
+  .list-meta{gap:10px;}
+  .search-box{flex:1;}
+  .search-box input{width:100%;}
+}

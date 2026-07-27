@@ -191,9 +191,31 @@
   /* ============================================================
      views
      ============================================================ */
+  /* Mobile: the sidebar is off-canvas below 860px, opened from the header. */
+  function closeDrawer(){
+    document.querySelector('.shell').classList.remove('nav-open');
+    document.getElementById('scrim').hidden = true;
+    document.getElementById('menuBtn').setAttribute('aria-expanded', 'false');
+  }
+  (function wireDrawer(){
+    const shell = document.querySelector('.shell');
+    const scrim = document.getElementById('scrim');
+    const btn = document.getElementById('menuBtn');
+    if(!btn) return;
+    btn.addEventListener('click', () => {
+      const open = !shell.classList.contains('nav-open');
+      shell.classList.toggle('nav-open', open);
+      scrim.hidden = !open;
+      btn.setAttribute('aria-expanded', String(open));
+    });
+    scrim.addEventListener('click', closeDrawer);
+    document.addEventListener('keydown', e => { if(e.key === 'Escape') closeDrawer(); });
+  })();
+
   function render(){
     // An editor landing on an admin-only view falls back to the allowlist.
     if(ADMIN_ONLY.includes(state.view) && !isAdmin()) state.view = 'allowlist';
+    closeDrawer();                 // switching view closes the mobile drawer
     renderNav();
     const [t,s] = TITLES[state.view];
     titleEl.textContent = t; subEl.textContent = s;

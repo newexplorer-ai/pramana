@@ -19,6 +19,41 @@
   const qform      = document.getElementById('qform');
   const qinput     = document.getElementById('qinput');
   const tierStrip  = document.getElementById('tierStrip');
+  const shellEl    = document.querySelector('.shell');
+  const scrimEl    = document.getElementById('scrim');
+  const sourcesBtnN= document.getElementById('sourcesBtnN');
+
+  /* ---------- mobile drawers ----------
+     Below their breakpoints the sidebar and sources rail are off-canvas.
+     One at a time, closed by the scrim, Escape, or any navigation. */
+  function closeDrawers(){
+    shellEl.classList.remove('nav-open', 'rail-open');
+    scrimEl.hidden = true;
+    document.getElementById('menuBtn').setAttribute('aria-expanded', 'false');
+    document.getElementById('sourcesBtn').setAttribute('aria-expanded', 'false');
+  }
+  function toggleDrawer(which){
+    const cls = which === 'nav' ? 'nav-open' : 'rail-open';
+    const open = !shellEl.classList.contains(cls);
+    closeDrawers();
+    if(open){
+      shellEl.classList.add(cls);
+      scrimEl.hidden = false;
+      document.getElementById(which === 'nav' ? 'menuBtn' : 'sourcesBtn')
+        .setAttribute('aria-expanded', 'true');
+    }
+  }
+  document.getElementById('menuBtn').addEventListener('click', () => toggleDrawer('nav'));
+  document.getElementById('sourcesBtn').addEventListener('click', () => toggleDrawer('rail'));
+  scrimEl.addEventListener('click', closeDrawers);
+  document.addEventListener('keydown', e => { if(e.key === 'Escape') closeDrawers(); });
+
+  /* Mirror the rail's citation count onto the header button, so a phone user
+     can see there are sources to open without opening the drawer. */
+  function syncSourcesBadge(){
+    const m = /(\d+)/.exec(railTitle.textContent || '');
+    sourcesBtnN.textContent = m ? m[1] : '';
+  }
 
   /* ---------- icons ---------- */
   const I = {
@@ -85,6 +120,7 @@
   // Reopen a past conversation as a full thread (every turn), not just the last
   // answer, and set convId so a follow-up continues it with context.
   async function openConversationById(convId){
+    closeDrawers();
     let data;
     try { data = await PRAMANA_API.get('/api/conversations/' + encodeURIComponent(convId)); }
     catch(e){ return; }
@@ -381,6 +417,7 @@
      Ask (App Ask canvas)
      ============================================================ */
   function renderAsk(){
+    closeDrawers();
     clearTimers();
     activeRecent = null; current = null;
     LIVE.convId = null;                     // New question = new conversation
@@ -510,6 +547,7 @@
           : 'Nothing is shown rather than something unverified. Unanswered questions drive what gets added to the allowlist next.'}</p>
       </div>`;
 
+    syncSourcesBadge();
     renderRecents();
     const sug = activeTurn.querySelector('.suggest-src');
     if(sug) sug.addEventListener('click', async () => {
@@ -675,6 +713,7 @@
       });
     }
     renderLiveRail(res);
+    syncSourcesBadge();
     renderRecents();
 
     // Listeners are scoped to this turn only, so re-rendering a new answer never
@@ -751,6 +790,7 @@
      flow glue
      ============================================================ */
   function submit(query){
+    closeDrawers();
     query = (query||'').trim();
     if(!query) return;
     qinput.value = '';
