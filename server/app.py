@@ -17,6 +17,7 @@ The frontend is served from the repo root by this same process.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import os
@@ -83,7 +84,8 @@ CREATE TABLE IF NOT EXISTS allowed_users(
   email TEXT PRIMARY KEY, name TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('clinician','editor','admin')),
   enabled INTEGER NOT NULL DEFAULT 1,
-  added_by TEXT, created_at TEXT, last_login TEXT);
+  added_by TEXT, created_at TEXT, last_login TEXT,
+  password_hash TEXT);
 CREATE TABLE IF NOT EXISTS auth_sessions(
   token TEXT PRIMARY KEY, email TEXT NOT NULL, created_at TEXT);
 CREATE TABLE IF NOT EXISTS allowlist_domains(
@@ -189,6 +191,9 @@ def _migrate() -> None:
         q("ALTER TABLE allowlist_domains ADD COLUMN priority INTEGER NOT NULL DEFAULT 9999")
     # Full answer payload per assistant turn, so a conversation can be reloaded
     # with its citations intact across sessions — not just the plain text.
+    ucols = {r["name"] for r in q("PRAGMA table_info(allowed_users)")}
+    if "password_hash" not in ucols:
+        q("ALTER TABLE allowed_users ADD COLUMN password_hash TEXT")
     tcols = {r["name"] for r in q("PRAGMA table_info(turns)")}
     if "result_json" not in tcols:
         q("ALTER TABLE turns ADD COLUMN result_json TEXT")
@@ -210,7 +215,9 @@ def init_db() -> None:
     _migrate()
     if not q("SELECT 1 FROM allowed_users LIMIT 1"):
         for email, name, role, enabled, by in SEED_USERS:
-            q("INSERT INTO allowed_users VALUES(?,?,?,?,?,?,NULL)",
+            q("""INSERT INTO allowed_users(email,name,role,enabled,added_by,
+                 created_at,last_login,password_hash)
+                 VALUES(?,?,?,?,?,?,NULL,NULL)""",
               (email, name, role, enabled, by, now()))
     # Domains are additive on every boot so a curated list can grow without a
     # migration. INSERT OR IGNORE deliberately leaves existing rows untouched —
@@ -267,6 +274,32 @@ def audit(actor: str, action: str, change: str) -> None:
 # ---------------------------------------------------------------- auth
 
 ROLES = {"clinician": 1, "editor": 2, "admin": 3}
+
+
+MIN_PASSWORD_LEN = 8
+_PW_ITERATIONS = 200_000
+
+
+def hash_password(password: str) -> str:
+    """PBKDF2-HMAC-SHA256 with a per-user random salt. Passwords are never
+    stored or logged in the clear, and never returned by any endpoint."""
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PW_ITERATIONS)
+    return f"pbkdf2_sha256${_PW_ITERATIONS}${salt.hex()}${dk.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """Constant-time check against a stored hash. False on any malformed value
+    rather than raising, so a corrupt row denies access instead of 500ing."""
+    try:
+        algo, iters, salt_hex, want = stored.split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode(),
+                                 bytes.fromhex(salt_hex), int(iters))
+        return secrets.compare_digest(dk.hex(), want)
+    except Exception:
+        return False
 
 
 def issue_token(email: str) -> str:
@@ -343,15 +376,27 @@ async def auth_google(body: dict):
 
 @app.post("/api/auth/demo")
 def auth_demo(body: dict):
-    """Simulated sign-in — only available while no Google client is configured."""
+    """Simulated sign-in — only available while no Google client is configured.
+
+    Two credential paths: a user given a personal password in Admin must use
+    it (the shared beta code will not work for them), and everyone else falls
+    back to the shared code. That lets test users be issued individual
+    passwords without re-provisioning the existing accounts.
+    """
     if GOOGLE_CLIENT_ID:
         raise HTTPException(400, "demo_disabled")
-    if DEMO_PASSWORD and not secrets.compare_digest(
-            str(body.get("password", "")), DEMO_PASSWORD):
-        raise HTTPException(403, "demo_password_required")
     email = str(body.get("email", "")).strip().lower()
     if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
         raise HTTPException(400, "invalid_email")
+    supplied = str(body.get("password", "") or "")
+
+    rows = q("SELECT password_hash FROM allowed_users WHERE email=?", (email,))
+    personal = rows[0]["password_hash"] if rows else None
+    if personal:
+        if not verify_password(supplied, personal):
+            raise HTTPException(403, "bad_password")
+    elif DEMO_PASSWORD and not secrets.compare_digest(supplied, DEMO_PASSWORD):
+        raise HTTPException(403, "demo_password_required")
     return _login_result(email)
 
 
@@ -1436,7 +1481,12 @@ def domains_toggle(domain: str, body: dict, user: dict = Depends(require_role("e
 
 @app.get("/api/admin/users")
 def users_list(user: dict = Depends(require_role("admin"))):
-    return [dict(r) for r in q("SELECT * FROM allowed_users ORDER BY created_at")]
+    # Never SELECT *: that would ship password_hash to the browser. The UI only
+    # needs to know whether a password is set, not what it hashes to.
+    return [dict(r) for r in q("""
+        SELECT email, name, role, enabled, added_by, created_at, last_login,
+               (password_hash IS NOT NULL) AS has_password
+        FROM allowed_users ORDER BY created_at""")]
 
 
 @app.post("/api/admin/users")
@@ -1444,13 +1494,21 @@ def users_add(body: dict, user: dict = Depends(require_role("admin"))):
     email = str(body.get("email", "")).strip().lower()
     name = str(body.get("name", "")).strip()
     role = body.get("role", "clinician")
+    password = str(body.get("password", "") or "")
     if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email) or role not in ROLES or not name:
         raise HTTPException(400, "invalid")
+    if password and len(password) < MIN_PASSWORD_LEN:
+        raise HTTPException(400, f"password_too_short_min_{MIN_PASSWORD_LEN}")
     if q("SELECT 1 FROM allowed_users WHERE email=?", (email,)):
         raise HTTPException(409, "duplicate")
-    q("INSERT INTO allowed_users VALUES(?,?,?,1,?,?,NULL)",
-      (email, name, role, user["name"], now()))
-    audit(user["name"], "create", f"beta access granted to {email}")
+    # Optional: with no password the user falls back to the shared beta code.
+    pw_hash = hash_password(password) if password else None
+    q("""INSERT INTO allowed_users(email,name,role,enabled,added_by,created_at,
+         last_login,password_hash) VALUES(?,?,?,1,?,?,NULL,?)""",
+      (email, name, role, user["name"], now(), pw_hash))
+    audit(user["name"], "create",
+          f"beta access granted to {email}"
+          + (" with a personal password" if pw_hash else ""))
     return {"ok": True}
 
 
@@ -1462,6 +1520,17 @@ def users_update(email: str, body: dict, user: dict = Depends(require_role("admi
     rows = q("SELECT * FROM allowed_users WHERE email=?", (email,))
     if not rows:
         raise HTTPException(404, "not_found")
+    if "password" in body:
+        pw = str(body.get("password") or "")
+        if pw and len(pw) < MIN_PASSWORD_LEN:
+            raise HTTPException(400, f"password_too_short_min_{MIN_PASSWORD_LEN}")
+        # Empty string clears it, returning the user to the shared beta code.
+        q("UPDATE allowed_users SET password_hash=? WHERE email=?",
+          (hash_password(pw) if pw else None, email))
+        # A password change must not leave old sessions alive.
+        q("DELETE FROM auth_sessions WHERE email=?", (email,))
+        audit(user["name"], "update",
+              f"password {'set for' if pw else 'cleared for'} {email}")
     if "enabled" in body:
         enabled = 1 if body["enabled"] else 0
         q("UPDATE allowed_users SET enabled=? WHERE email=?", (enabled, email))
@@ -1495,7 +1564,9 @@ def requests_decide(req_id: int, body: dict, user: dict = Depends(require_role("
       ("approved" if decision == "approve" else "denied", req_id))
     if decision == "approve":
         if not q("SELECT 1 FROM allowed_users WHERE email=?", (r["email"],)):
-            q("INSERT INTO allowed_users VALUES(?,?,?,1,?,?,NULL)",
+            q("""INSERT INTO allowed_users(email,name,role,enabled,added_by,
+                     created_at,last_login,password_hash)
+                     VALUES(?,?,?,1,?,?,NULL,NULL)""",
               (r["email"], r["name"], "clinician", user["name"], now()))
         audit(user["name"], "create", f"beta access granted to {r['email']}")
     else:

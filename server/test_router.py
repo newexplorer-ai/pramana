@@ -732,6 +732,57 @@ A._client = _saved_client
 check("triage failure fails open to in_scope", _t["in_scope"] is True, str(_t))
 check("triage failure defaults plan to both", _t["plan"] == "both", str(_t))
 
+# --------------------------------------------------------------- test 16
+# Per-user passwords. Security-critical: hashes must never be stored in the
+# clear or leave the server, and a personal password must displace the
+# shared beta code for that user.
+print("\n16. Per-user passwords")
+_h = A.hash_password("a-real-password")
+check("password is hashed, not stored in the clear", "a-real-password" not in _h)
+check("hash is PBKDF2-SHA256 with a salt", _h.startswith("pbkdf2_sha256$200000$"))
+check("correct password verifies", A.verify_password("a-real-password", _h))
+check("wrong password rejected", not A.verify_password("a-real-passwore", _h))
+check("two hashes of the same password differ (salted)",
+      A.hash_password("same") != A.hash_password("same"))
+check("malformed hash denies rather than raising",
+      A.verify_password("x", "garbage") is False)
+
+_r = client.post("/api/admin/users", headers=AUTH, json={
+    "email": "pwtest@hospital.in", "name": "Dr PW",
+    "role": "clinician", "password": "tester-pass-1"})
+check("user created with a password", _r.status_code == 200, _r.text[:80])
+check("personal password logs in",
+      client.post("/api/auth/demo",
+                  json={"email": "pwtest@hospital.in",
+                        "password": "tester-pass-1"}).status_code == 200)
+check("wrong password rejected at login",
+      client.post("/api/auth/demo",
+                  json={"email": "pwtest@hospital.in",
+                        "password": "wrong"}).status_code == 403)
+check("short password refused",
+      client.post("/api/admin/users", headers=AUTH,
+                  json={"email": "short@x.in", "name": "S", "role": "clinician",
+                        "password": "abc"}).status_code == 400)
+_listed = client.get("/api/admin/users", headers=AUTH).json()
+check("password_hash never returned to the browser",
+      all("password_hash" not in u for u in _listed))
+check("has_password flag is exposed instead",
+      any(u["email"] == "pwtest@hospital.in" and u["has_password"] for u in _listed))
+
+# resetting a password must kill live sessions
+_t = client.post("/api/auth/demo", json={"email": "pwtest@hospital.in",
+                                         "password": "tester-pass-1"}).json()["token"]
+_PH = {"Authorization": f"Bearer {_t}"}
+check("session valid before reset", client.get("/api/me", headers=_PH).status_code == 200)
+client.patch("/api/admin/users/pwtest@hospital.in", headers=AUTH,
+             json={"password": "second-password"})
+check("reset invalidates existing sessions",
+      client.get("/api/me", headers=_PH).status_code == 401)
+check("new password works",
+      client.post("/api/auth/demo",
+                  json={"email": "pwtest@hospital.in",
+                        "password": "second-password"}).status_code == 200)
+
 print("\n" + "=" * 60)
 if FAILURES:
     print(f"{len(FAILURES)} FAILURE(S):")

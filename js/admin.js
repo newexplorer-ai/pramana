@@ -139,7 +139,7 @@
     return live()
       ? LIVEDATA.users.map(u => ({ email:u.email, name:u.name, role:u.role,
           enabled:!!u.enabled, by:u.added_by||'—', date:fmtD(u.created_at),
-          lastLogin:u.last_login }))
+          lastLogin:u.last_login, hasPassword:!!u.has_password }))
       : PRAMANA_AUTH.users();
   }
   function requestsPending(){
@@ -396,8 +396,13 @@
             <option value="admin">admin</option>
           </select>
         </div>
+        <div class="field f-note">
+          <span class="field-label">Password <span class="opt">— optional, min 8</span></span>
+          <input id="uPass" type="text" autocomplete="off" placeholder="Leave blank to use the shared beta code">
+        </div>
         <button class="add-btn" type="submit">${svg('plus',{w:13,sw:2.2,stroke:'#fff'})}Add</button>
       </form>
+      <div class="list-meta-note" style="margin:8px 2px 0;">Give a tester their own password and the shared beta code stops working for them. It is stored hashed — you will not be able to read it back, only replace it.</div>
 
       <div class="tbl" style="margin-top:14px;">
         <div class="tbl-head cols-users"><div>Email</div><div>Name</div><div>Role</div><div>Last sign-in</div><div style="text-align:right;">Enabled</div></div>
@@ -412,7 +417,10 @@
                 ${['clinician','editor','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${r}</option>`).join('')}
               </select>
             </div>
-            <div class="cell-by">${esc(u.lastLogin||'never')}</div>
+            <div class="cell-by">${esc(u.lastLogin||'never')}
+              <div class="cell-date">${u.hasPassword ? 'own password' : 'shared code'}
+                ${live()?`· <a class="suggest-src" data-pw="${i}" style="cursor:pointer;font-size:10px;">${u.hasPassword?'reset':'set'}</a>`:''}</div>
+            </div>
             <div class="cell-end">
               <button class="toggle ${u.enabled?'on':''}" data-user="${i}" role="switch" aria-checked="${u.enabled}"
                 ${self?'disabled title="You cannot disable your own access"':''} aria-label="Enable ${esc(u.email)}"><span class="knob"></span></button>
@@ -494,6 +502,20 @@
         render();
       }));
 
+    // set / reset / clear a user's own password
+    viewEl.querySelectorAll('[data-pw]').forEach(el =>
+      el.addEventListener('click', () => {
+        const u = list[+el.getAttribute('data-pw')];
+        const pw = prompt(
+          `Password for ${u.email}\n\nMinimum 8 characters. Leave blank to clear it and return this user to the shared beta code.`,
+          '');
+        if(pw === null) return;                       // cancelled
+        const v = pw.trim();
+        if(v && v.length < 8){ alert('Password must be at least 8 characters.'); return; }
+        mutate(() => PRAMANA_API.patch(
+          '/api/admin/users/' + encodeURIComponent(u.email), { password: v }));
+      }));
+
     // add
     viewEl.querySelector('#addUserForm').addEventListener('submit', e => {
       e.preventDefault();
@@ -503,10 +525,16 @@
       const dup = usersData().some(u => u.email.toLowerCase() === email);
       if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || dup){ eEl.classList.add('invalid'); ok = false; } else eEl.classList.remove('invalid');
       if(!name){ nEl.classList.add('invalid'); ok = false; } else nEl.classList.remove('invalid');
+      const pEl = viewEl.querySelector('#uPass');
+      const password = pEl.value.trim();
+      // Optional, but if given it must satisfy the server's minimum.
+      if(password && password.length < 8){ pEl.classList.add('invalid'); ok = false; }
+      else pEl.classList.remove('invalid');
       if(!ok) return;
       const role = viewEl.querySelector('#uRole').value;
       if(live()){
-        mutate(() => PRAMANA_API.post('/api/admin/users', { email, name, role }));
+        mutate(() => PRAMANA_API.post('/api/admin/users',
+          password ? { email, name, role, password } : { email, name, role }));
         return;
       }
       const us = PRAMANA_AUTH.users();
