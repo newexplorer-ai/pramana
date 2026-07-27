@@ -125,6 +125,7 @@ body.adminpage{background:#fff;background-image:none;overflow:hidden;}
 .cols-domains{grid-template-columns:200px 1fr 120px 96px;}
 .cols-config{grid-template-columns:190px 130px 110px 1fr 130px;}
 .cols-audit{grid-template-columns:130px 150px 1fr 130px;}
+.cols-usage{grid-template-columns:1fr 84px 84px 84px 84px 116px 64px;}
 .tbl-row.cols-config{padding:12px 16px;}
 .tbl-row.cols-audit{padding:12px 16px;}
 
@@ -363,6 +364,12 @@ body.adminpage{background:#fff;background-image:none;overflow:hidden;}
   .cols-config{grid-template-columns:1fr 110px;}
   .cols-config .cell-desc,
   .tbl-head.cols-config div:nth-child(4){display:none;}
+  /* User | Questions | Export — the breakdown columns fold away on a phone. */
+  .cols-usage{grid-template-columns:1fr 70px 60px;}
+  .cols-usage > div:nth-child(3),
+  .cols-usage > div:nth-child(4),
+  .cols-usage > div:nth-child(5),
+  .cols-usage > div:nth-child(6){display:none;}
   /* Actor | Action (When already hidden at 900px). */
   .cols-audit{grid-template-columns:1fr 1fr;}
   .cols-audit .cell-change,

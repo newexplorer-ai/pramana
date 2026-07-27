@@ -92,6 +92,7 @@
     users:['Beta access','Who may sign in'],
     config:['Models & parameters','Runtime config-as-data'],
     keys:['Credentials','Provider status & rotation'],
+    usage:['Test results','Questions, answers and per-user activity'],
     audit:['Audit log','All configuration mutations'],
   };
 
@@ -177,6 +178,7 @@
       ['users','Beta access', pending ? String(pending) : String(usersData().length)],
       ['config','Models & config',''],
       ['keys','Credentials',''],
+      ['usage','Test results',''],
       ['audit','Audit log',''],
     ].filter(([id]) => isAdmin() || !ADMIN_ONLY.includes(id));
     navEl.innerHTML = items.map(([id,label,count])=>`
@@ -220,7 +222,7 @@
     const [t,s] = TITLES[state.view];
     titleEl.textContent = t; subEl.textContent = s;
     ({allowlist:renderAllowlist, users:renderUsers, config:renderConfig,
-      keys:renderKeys, audit:renderAudit})[state.view]();
+      keys:renderKeys, usage:renderUsage, audit:renderAudit})[state.view]();
     scroll.scrollTop = 0;
   }
 
@@ -714,6 +716,63 @@
   }
 
   /* ---------- audit ---------- */
+  /* ---------- test results: per-user activity + Q&A export ---------- */
+  async function renderUsage(){
+    if(!live()){
+      viewEl.innerHTML = `<div class="page-title">Test results</div>
+        <div class="page-lead">Available in live mode only — this view reads real query logs.</div>`;
+      return;
+    }
+    let rows = [];
+    try { rows = await PRAMANA_API.get('/api/admin/usage'); } catch(e){ rows = []; }
+    const tot = rows.reduce((a,r)=>a+(r.questions||0),0);
+    // The download needs the auth header, so fetch as a blob rather than a
+    // plain link — an <a href> would hit the endpoint unauthenticated.
+    const dl = (qs, name) => async () => {
+      try {
+        const r = await fetch('/api/admin/export' + qs, {
+          headers:{ 'Authorization':'Bearer ' + PRAMANA_API.token() } });
+        if(!r.ok) return;
+        const url = URL.createObjectURL(await r.blob());
+        const a = document.createElement('a');
+        a.href = url; a.download = name; a.click();
+        URL.revokeObjectURL(url);
+      } catch(e){}
+    };
+
+    viewEl.innerHTML = `
+      <div class="page-title">Test results</div>
+      <div class="page-lead">Every question your testers asked and the answer it produced — with tier, sources cited, latency and thumbs feedback. Download as CSV for analysis, or per user.</div>
+
+      <div class="add-form" style="align-items:center;">
+        <button class="add-btn" id="dlAll">${svg('plus',{w:13,sw:2.2,stroke:'#fff'})}Download all (CSV)</button>
+        <span class="list-meta-note">${tot} question${tot===1?'':'s'} from ${rows.length} user${rows.length===1?'':'s'}</span>
+      </div>
+
+      <div class="tbl" style="margin-top:16px;">
+        <div class="tbl-head cols-usage"><div>User</div><div>Questions</div><div>Grounded</div><div>Unverified</div><div>Not found</div><div>Feedback</div><div style="text-align:right;">Export</div></div>
+        ${rows.length ? rows.map((r,i)=>`
+          <div class="tbl-row cols-usage">
+            <div class="cell-domain">${esc(r.user_email)}</div>
+            <div>${r.questions}</div>
+            <div>${r.grounded||0}</div>
+            <div>${r.unverified||0}</div>
+            <div>${(r.not_found||0)+(r.out_of_scope||0)}</div>
+            <div>${r.thumbs_up||0} up · ${r.thumbs_down||0} down</div>
+            <div class="cell-end"><a class="suggest-src" data-dl="${i}" style="cursor:pointer;">CSV</a></div>
+          </div>`).join('')
+        : `<div class="tbl-empty">No questions logged yet.</div>`}
+      </div>
+      <div class="list-meta-note" style="margin:10px 2px;">Average response time: ${rows.length ? (rows.reduce((a,r)=>a+(r.avg_seconds||0),0)/rows.length).toFixed(1) : '—'}s. “Not found” includes questions declined as non-medical.</div>`;
+
+    viewEl.querySelector('#dlAll').addEventListener('click',
+      dl('?format=csv', 'praman-qa-all.csv'));
+    viewEl.querySelectorAll('[data-dl]').forEach(el =>
+      el.addEventListener('click', dl(
+        '?format=csv&user_email=' + encodeURIComponent(rows[+el.getAttribute('data-dl')].user_email),
+        'praman-qa-' + rows[+el.getAttribute('data-dl')].user_email.split('@')[0] + '.csv')));
+  }
+
   function renderAudit(){
     viewEl.innerHTML = `
       <div class="page-title">Audit log</div>

@@ -16,6 +16,8 @@ The frontend is served from the repo root by this same process.
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 import re
@@ -30,7 +32,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 try:
@@ -104,7 +106,8 @@ CREATE TABLE IF NOT EXISTS conversations(
   id TEXT PRIMARY KEY, user_email TEXT, title TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS turns(
   id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT, role TEXT,
-  content TEXT, tier INTEGER, result_json TEXT, created_at TEXT);
+  content TEXT, tier INTEGER, result_json TEXT, query_id TEXT,
+  created_at TEXT);
 CREATE TABLE IF NOT EXISTS query_logs(
   query_id TEXT PRIMARY KEY, user_email TEXT, conversation_id TEXT,
   query_text TEXT, tier INTEGER, status TEXT, high_stakes INTEGER,
@@ -189,6 +192,13 @@ def _migrate() -> None:
     tcols = {r["name"] for r in q("PRAGMA table_info(turns)")}
     if "result_json" not in tcols:
         q("ALTER TABLE turns ADD COLUMN result_json TEXT")
+    # Links a turn to its query_logs row, so a question can be matched to its
+    # answer even in a multi-turn thread (conversation_id alone is ambiguous).
+    if "query_id" not in tcols:
+        q("ALTER TABLE turns ADD COLUMN query_id TEXT")
+        # Backfill: existing assistant turns carry the id inside result_json.
+        q("""UPDATE turns SET query_id = json_extract(result_json,'$.query_id')
+             WHERE query_id IS NULL AND result_json IS NOT NULL""")
 
 
 def init_db() -> None:
@@ -1262,16 +1272,16 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
            json.dumps(falls) if falls else None,
            result.get("source_region"), result.get("pool_outcome"),
            result.get("indian_citations"), result.get("intl_citations"), now()))
-        q("""INSERT INTO turns(conversation_id,role,content,tier,result_json,created_at)
-             VALUES(?,?,?,?,?,?)""",
-          (conversation_id, "user", query, None, None, now()))
+        q("""INSERT INTO turns(conversation_id,role,content,tier,result_json,
+             query_id,created_at) VALUES(?,?,?,?,?,?,?)""",
+          (conversation_id, "user", query, None, None, query_id, now()))
         # Store the assistant turn always (even not-found) with the full result,
         # so a reloaded thread shows exactly what the clinician saw. Empty-content
         # turns are excluded from conversation history in _load_history.
-        q("""INSERT INTO turns(conversation_id,role,content,tier,result_json,created_at)
-             VALUES(?,?,?,?,?,?)""",
+        q("""INSERT INTO turns(conversation_id,role,content,tier,result_json,
+             query_id,created_at) VALUES(?,?,?,?,?,?,?)""",
           (conversation_id, "assistant", result.get("answer_text") or "",
-           result["tier"], json.dumps(result), now()))
+           result["tier"], json.dumps(result), query_id, now()))
 
         yield sse("result", result)
 
@@ -1624,6 +1634,91 @@ def providers_activate(name: str, user: dict = Depends(require_role("admin"))):
 def audit_list(user: dict = Depends(require_role("editor"))):
     return [dict(r) for r in
             q("SELECT * FROM audit_log ORDER BY id DESC LIMIT 200")]
+
+
+def _export_rows(user_email: str = "", since: str = "") -> list[dict]:
+    """Every question with the answer it produced, newest first.
+
+    query_logs is the spine (one row per question asked); the assistant turn
+    supplies the answer text and its citations, joined on query_id.
+    """
+    sql = """SELECT ql.created_at, ql.user_email, ql.query_id, ql.conversation_id,
+                    ql.query_text, ql.tier, ql.status, ql.source_region,
+                    ql.pool_outcome, ql.indian_citations, ql.intl_citations,
+                    ql.latency_ms, ql.model_used, ql.feedback, ql.fallthrough,
+                    t.content AS answer_text, t.result_json
+             FROM query_logs ql
+             LEFT JOIN turns t
+               ON t.query_id = ql.query_id AND t.role = 'assistant'
+             WHERE 1=1"""
+    args: list = []
+    if user_email:
+        sql += " AND ql.user_email = ?"
+        args.append(user_email)
+    if since:
+        sql += " AND ql.created_at >= ?"
+        args.append(since)
+    sql += " ORDER BY ql.created_at DESC"
+
+    out = []
+    for r in q(sql, tuple(args)):
+        row = dict(r)
+        cites = []
+        try:
+            res = json.loads(row.pop("result_json") or "{}")
+            cites = res.get("citations") or []
+        except Exception:
+            row.pop("result_json", None)
+        row["citation_count"] = len(cites)
+        row["citation_domains"] = "; ".join(
+            dict.fromkeys(c.get("domain", "") for c in cites if c.get("domain")))
+        row["citation_urls"] = "; ".join(c.get("url", "") for c in cites if c.get("url"))
+        out.append(row)
+    return out
+
+
+@app.get("/api/admin/usage")
+def admin_usage(user: dict = Depends(require_role("editor"))):
+    """Per-user activity summary — the at-a-glance view for a test round."""
+    rows = q("""SELECT user_email,
+                       COUNT(*)                                    AS questions,
+                       SUM(CASE WHEN tier=2 THEN 1 ELSE 0 END)     AS grounded,
+                       SUM(CASE WHEN tier=3 THEN 1 ELSE 0 END)     AS unverified,
+                       SUM(CASE WHEN status='not_found' THEN 1 ELSE 0 END)   AS not_found,
+                       SUM(CASE WHEN status='out_of_scope' THEN 1 ELSE 0 END) AS out_of_scope,
+                       SUM(CASE WHEN feedback='up' THEN 1 ELSE 0 END)   AS thumbs_up,
+                       SUM(CASE WHEN feedback='down' THEN 1 ELSE 0 END) AS thumbs_down,
+                       ROUND(AVG(latency_ms)/1000.0, 1)            AS avg_seconds,
+                       MIN(created_at) AS first_at, MAX(created_at) AS last_at
+                FROM query_logs GROUP BY user_email ORDER BY questions DESC""")
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/admin/export")
+def admin_export(format: str = "json", user_email: str = "", since: str = "",
+                 user: dict = Depends(require_role("editor"))):
+    """Full Q&A export for analysis. format=csv streams a spreadsheet-ready
+    file; format=json returns the same rows. Optional user_email / since
+    (ISO date) filters."""
+    rows = _export_rows(user_email, since)
+    if format != "csv":
+        return rows
+
+    cols = ["created_at", "user_email", "query_text", "answer_text", "tier",
+            "status", "source_region", "citation_count", "citation_domains",
+            "citation_urls", "pool_outcome", "indian_citations",
+            "intl_citations", "latency_ms", "model_used", "feedback",
+            "fallthrough", "query_id", "conversation_id"]
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    w.writeheader()
+    for r in rows:
+        w.writerow({c: r.get(c) for c in cols})
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return Response(
+        content=buf.getvalue(), media_type="text/csv",
+        headers={"Content-Disposition":
+                 f'attachment; filename="praman-qa-{stamp}.csv"'})
 
 
 @app.get("/api/admin/gap-log")
