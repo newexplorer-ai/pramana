@@ -1642,11 +1642,26 @@ def _export_rows(user_email: str = "", since: str = "") -> list[dict]:
     query_logs is the spine (one row per question asked); the assistant turn
     supplies the answer text and its citations, joined on query_id.
     """
+    # Rows logged before turns.query_id existed cannot join on it. Where the
+    # conversation holds exactly one answer the match is still unambiguous, so
+    # fall back to that — it recovers the earlier test rounds. Conversations
+    # with several answers and no query_id stay unmatched rather than guessing.
     sql = """SELECT ql.created_at, ql.user_email, ql.query_id, ql.conversation_id,
                     ql.query_text, ql.tier, ql.status, ql.source_region,
                     ql.pool_outcome, ql.indian_citations, ql.intl_citations,
                     ql.latency_ms, ql.model_used, ql.feedback, ql.fallthrough,
-                    t.content AS answer_text, t.result_json
+                    COALESCE(t.content, (
+                        SELECT t2.content FROM turns t2
+                        WHERE t2.conversation_id = ql.conversation_id
+                          AND t2.role = 'assistant'
+                        GROUP BY t2.conversation_id HAVING COUNT(*) = 1
+                    )) AS answer_text,
+                    COALESCE(t.result_json, (
+                        SELECT t3.result_json FROM turns t3
+                        WHERE t3.conversation_id = ql.conversation_id
+                          AND t3.role = 'assistant'
+                        GROUP BY t3.conversation_id HAVING COUNT(*) = 1
+                    )) AS result_json
              FROM query_logs ql
              LEFT JOIN turns t
                ON t.query_id = ql.query_id AND t.role = 'assistant'
