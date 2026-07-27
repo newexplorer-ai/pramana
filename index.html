@@ -33,8 +33,8 @@
   <header class="hero">
     <div class="hero-inner">
       <div class="eyebrow">Cited medical Q&amp;A · India</div>
-      <h1>Every answer, traceable to the<br>Indian guideline it came from.</h1>
-      <p class="hero-sub">Praman answers clinical questions using only Indian medical literature — ICMR, MoHFW, the National Essential Medicines List, and peer-reviewed Indian journals — with a citation on every claim.</p>
+      <h1>Every answer, traceable to the<br>Clinical journal it came from.</h1>
+      <p class="hero-sub">Praman answers clinical questions using only peer-reviewed Clinical Literature, with a citation on every claim.</p>
       <form class="hero-ask" id="heroAsk">
         <input type="text" placeholder="Ask a clinical question…" aria-label="Ask a clinical question">
         <button type="submit" aria-label="Ask">→</button>
@@ -81,9 +81,9 @@
 
   <!-- TRUST STRIP -->
   <section class="trust" id="sources">
-    <div class="eyebrow" style="letter-spacing:.14em;">Grounded in Indian medical literature</div>
+    <div class="eyebrow" style="letter-spacing:.14em;">The sources behind every answer</div>
     <div class="trust-row wrap">
-      <span>ICMR</span><span>MoHFW</span><span>National Essential Medicines List</span><span>Indian Journal of Medical Research</span><span>National Medical Journal of India</span><span>Indian Pediatrics</span><span>CDSCO</span>
+      <span>ICMR</span><span>MoHFW</span><span>National Essential Medicines List</span><span>Indian Journal of Medical Research</span><span>National Medical Journal of India</span><span>Indian Pediatrics</span><span>CDSCO</span><span style="font-style:italic;color:var(--faint-2);">…and many more</span>
     </div>
   </section>
 
@@ -91,25 +91,25 @@
   <section class="section" id="tiers">
     <div class="wrap">
       <div style="max-width:720px;">
-        <div class="eyebrow">Three tiers, one promise</div>
-        <h2>If Praman states it, you can see exactly where the Indian literature says it.</h2>
-        <p class="section-sub">Every response is labelled with exactly one tier and its own colour. The product never blurs the line between a grounded citation and a general answer.</p>
+        <div class="eyebrow">Where every answer comes from</div>
+        <h2>If Praman states it, you can see exactly where the literature says it.</h2>
+        <p class="section-sub">Every answer carries a clear, colour-coded label telling you where it came from — so you always know whether it's backed by a published source or just a general answer. The two are never mixed up.</p>
       </div>
       <div class="grid3">
         <div class="tier-card t1">
-          <span class="tier-badge b1">✓ Tier 1 · Corpus</span>
-          <h3>Grounded in the curated corpus</h3>
-          <p>Answers generated only from retrieved corpus passages with API-level citation enforcement, grouped by issuing body. The default, preferred outcome.</p>
+          <span class="tier-badge b1">✓ Level 1 · Published guidelines</span>
+          <h3>Straight from published medical literature</h3>
+          <p>The answer is drawn only from a trusted library of medical guidelines and journals, and every statement links to the exact source it came from. This is the answer you'll see most often — and the one to rely on most.</p>
         </div>
         <div class="tier-card t2">
-          <span class="tier-badge b2">🌐 Tier 2 · Web allowlist</span>
-          <h3>Extended to vetted Indian sites</h3>
-          <p>When corpus confidence is low, search is restricted to an allowlist of trusted Indian medical domains — same citation discipline, stamped with the retrieval date.</p>
+          <span class="tier-badge b2">🌐 Level 2 · Trusted websites</span>
+          <h3>Checked against trusted medical websites</h3>
+          <p>If the library doesn't have a clear answer, Praman looks only at a short, hand-picked list of reputable medical websites — never the open internet — and still shows you the source and the date it was checked.</p>
         </div>
         <div class="tier-card t3">
-          <span class="tier-badge b3">✦ Tier 3 · General model</span>
-          <h3>Clearly-labelled model answer</h3>
-          <p>When no grounded source exists, a frontier model answers — shown directly and highlighted as carrying no Indian-literature citation. High-stakes dosing questions are never answered this way.</p>
+          <span class="tier-badge b3">✦ Level 3 · General answer</span>
+          <h3>A clearly-marked general answer</h3>
+          <p>When no trusted source covers the question, you get a general AI answer, plainly marked as not backed by a cited source. For sensitive questions such as drug doses, Praman won't answer this way at all.</p>
         </div>
       </div>
     </div>
@@ -119,7 +119,7 @@
   <section class="section alt" id="security">
     <div class="wrap grid2">
       <div>
-        <div class="eyebrow">The trust-forming moment</div>
+        <div class="eyebrow">Check any claim yourself</div>
         <h2>“Show me where it says that.”</h2>
         <p class="section-sub">Every inline citation expands to the verbatim passage, full source metadata, and a deep-link into the original PDF with the sentence highlighted. For a medical audience, that is the whole product.</p>
         <div class="feature-checks">
@@ -150,7 +150,7 @@
     <div class="wrap">
       <div style="max-width:720px;">
         <div class="eyebrow">Who it's for</div>
-        <h2>Built for the people who need the source.</h2>
+        <h2>Built for doctors</h2>
       </div>
       <div class="grid3">
         <div class="aud-card">
@@ -175,11 +175,11 @@
   <!-- HOW IT WORKS -->
   <section class="section alt">
     <div class="wrap">
-      <h2 style="text-align:center;">Ask it. Ground it. Cite it.</h2>
+      <h2 style="text-align:center;">Ask a question. See the source. Trust the answer.</h2>
       <div class="grid3" style="margin-top:48px;">
-        <div class="step"><div class="step-num">01</div><h3>Ask a clinical question</h3><p>Type a question in plain English. Follow-ups keep the conversation's context, managed from the sidebar.</p></div>
-        <div class="step"><div class="step-num">02</div><h3>Retrieve &amp; verify</h3><p>Praman searches the corpus, then vetted web sources, and runs a groundedness check so cited text truly supports each claim.</p></div>
-        <div class="step"><div class="step-num">03</div><h3>Read the cited answer</h3><p>A tier-labelled answer with inline source pills, expandable citation cards, and the publication date of the newest source.</p></div>
+        <div class="step"><div class="step-num">01</div><h3>Ask your question</h3><p>Type it in plain English, just as you'd ask a colleague. You can ask follow-ups, and Praman remembers the conversation.</p></div>
+        <div class="step"><div class="step-num">02</div><h3>Praman finds and checks the source</h3><p>It searches its trusted library first, then reputable medical websites, and confirms that each source genuinely supports the answer before showing it to you.</p></div>
+        <div class="step"><div class="step-num">03</div><h3>Read the answer, with its sources</h3><p>Every claim links to the source it came from, which you can open and read in full — along with the date of the most recent source.</p></div>
       </div>
     </div>
   </section>
@@ -236,7 +236,7 @@
   <!-- FINAL CTA -->
   <section class="section alt" style="padding:100px 32px;">
     <div style="max-width:760px;margin:0 auto;text-align:center;">
-      <h2 style="font-size:clamp(32px,4vw,46px);">Put every answer on the record.</h2>
+      <h2 style="font-size:clamp(32px,4vw,46px);">Every answer, with a source you can check.</h2>
       <p class="section-sub" style="max-width:540px;margin-left:auto;margin-right:auto;">Join the closed beta and see exactly where the Indian literature stands on your next clinical question.</p>
       <div style="margin-top:28px;display:flex;justify-content:center;gap:12px;flex-wrap:wrap;">
         <button class="cta-btn lg" data-open-access>Request beta access</button>
