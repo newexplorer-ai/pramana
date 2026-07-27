@@ -104,7 +104,7 @@
       `<button class="suggest" data-q="${esc(q)}"><span class="arrow">→</span>${q}</button>`).join('');
     show(`
       <div class="home-hero">
-        <h2>Ask a question grounded<br>in Indian medical literature</h2>
+        <h2>Answers grounded<br>in medical literature</h2>
         <div class="home-privacy">${svg(I.shieldSm,{w:12,stroke:'#35694e'})}DPDP-conscious · no patient-identifiable information</div>
       </div>
       <div class="chips">${chips}</div>
