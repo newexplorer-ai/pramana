@@ -199,10 +199,12 @@ button{font-family:inherit;}
 .thinking{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted-2);font-weight:500;margin:16px 0;}
 .retrieve-card{border:1px solid var(--line);border-radius:var(--radius-block);padding:17px;display:flex;flex-direction:column;gap:13px;}
 .retrieve-card h3{margin:0;font-size:11px;font-weight:600;color:var(--ink);letter-spacing:.04em;text-transform:uppercase;}
-.rstep{display:flex;align-items:center;gap:11px;font-size:12.5px;color:var(--faint-2);transition:color .3s;}
+/* align-items:flex-start, not center: a label that wraps to two lines would
+   otherwise float its dot to the middle and break the checklist rhythm. */
+.rstep{display:flex;align-items:flex-start;gap:11px;font-size:12.5px;line-height:1.35;color:var(--faint-2);transition:color .3s;}
 .rstep.active{color:var(--ink);font-weight:600;}
 .rstep.done{color:var(--body);}
-.rstep .dot{width:17px;height:17px;border-radius:50%;border:1.5px solid var(--line-2);flex:none;display:inline-flex;align-items:center;justify-content:center;font-size:9px;color:#fff;transition:all .3s;}
+.rstep .dot{width:17px;height:17px;border-radius:50%;border:1.5px solid var(--line-2);flex:none;display:inline-flex;align-items:center;justify-content:center;font-size:9px;color:#fff;transition:all .3s;margin-top:0.5px;}
 .rstep.done .dot{background:var(--t1);border-color:var(--t1);}
 .rstep.active .dot{border:2px solid #d8d3c9;border-top-color:var(--ink);animation:spin .7s linear infinite;background:transparent;}
 .progress-bar{height:8px;border-radius:5px;margin-top:4px;background:linear-gradient(90deg,#f1efe9 30%,#e4e0d7 50%,#f1efe9 70%);background-size:220% 100%;animation:shimmer 1.3s linear infinite;}

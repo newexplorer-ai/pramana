@@ -655,7 +655,7 @@ def _mixed_batches(by_region: dict, indian_slots: int, cap: int) -> list[tuple]:
         ins = ins[len(take_in):]
         batch = take_in + intls[:cap - len(take_in)]
         intls = intls[cap - len(take_in):]
-        out.append(("MIXED", "Indian and international", batch, n, 0))
+        out.append(("MIXED", "Indian + international", batch, n, 0))
     # Second pass fills in the now-known total so the UI can say "1 of 2".
     return [(r, l, b, i, len(out)) for r, l, b, i, _ in out]
 
@@ -1058,7 +1058,7 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
             # answered; otherwise serve the one that did, honestly labelled.
             if "IN" in good and "INTL" in good:
                 result["pool_outcome"] = "both_answered"
-                yield sse("stage", {"label": "Combining Indian and international evidence"})
+                yield sse("stage", {"label": "Combining the evidence"})
                 try:
                     ctext, ccites, cfups, cmodel = _compose(query, good["IN"], good["INTL"])
                     candidate = (ctext, ccites, cfups, cmodel)
@@ -1179,8 +1179,7 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
             # is no upfront withhold: the only not_found left is when Tier 3
             # itself returns nothing (refusal, error, or empty).
             t3_model, t3_prov = model, prov
-            yield sse("stage", {"label": "No reliable source found — "
-                                         "answering from general knowledge"})
+            yield sse("stage", {"label": "Answering from general knowledge"})
             try:
                 t3_client = _client(t3_model)
                 if t3_prov == "openai":

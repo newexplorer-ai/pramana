@@ -294,6 +294,13 @@ body.apppage{
   .convo-scroll:has(.ask-state){display:flex;align-items:center;}
   .convo-scroll:has(.ask-state) .convo{width:100%;}
   .ask-state{padding-bottom:4px;}
+  /* Same for the first turn's loading state: top-aligning it left a screenful
+     of blank space beneath, which read as a broken half-rendered page. Only
+     when it is the sole turn — later turns should stay in document order. */
+  .convo-scroll:has(.turn:only-child .retrieve-card){display:flex;align-items:center;}
+  .convo-scroll:has(.turn:only-child .retrieve-card) .convo{width:100%;}
+  .retrieve-card{padding:15px;gap:11px;}
+  .retrieve-note{margin-top:12px;}
   .ask-state h2{font-size:22px;line-height:1.26;}
   .ask-sub{font-size:12.5px;}
   .ask-state .chips,
