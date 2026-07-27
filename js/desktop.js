@@ -48,6 +48,26 @@
   scrimEl.addEventListener('click', closeDrawers);
   document.addEventListener('keydown', e => { if(e.key === 'Escape') closeDrawers(); });
 
+  /* ---------- keep the composer above the on-screen keyboard ----------
+     iOS Safari does not shrink the viewport when the keyboard opens — 100dvh
+     still reports the full height — so the composer ends up underneath it and
+     the user has to scroll to reach what they just tapped. visualViewport does
+     report the truly-visible area, so size the shell to that instead. */
+  (function fitToKeyboard(){
+    const vv = window.visualViewport;
+    if(!vv || !shellEl) return;
+    const fit = () => {
+      shellEl.style.height = vv.height + 'px';
+      // iOS also scrolls the layout viewport up to reveal the field; undo it,
+      // otherwise the header scrolls out of sight above the fold.
+      window.scrollTo(0, 0);
+    };
+    vv.addEventListener('resize', fit);
+    vv.addEventListener('scroll', fit);
+    // The keyboard animates in after focus, so re-fit once it has settled.
+    qinput.addEventListener('focus', () => { setTimeout(fit, 60); setTimeout(fit, 300); });
+  })();
+
   /* Mirror the rail's citation count onto the header button, so a phone user
      can see there are sources to open without opening the drawer. */
   function syncSourcesBadge(){
