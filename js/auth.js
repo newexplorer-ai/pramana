@@ -2,7 +2,7 @@
    Praman — authentication & beta allowlist
    ------------------------------------------------------------
    Google Sign-In (GIS) proves identity; an admin-maintained
-   allowlist decides who may enter. Roles: clinician < editor < admin.
+   allowlist decides who may enter. Roles: clinician < admin.
 
    ⚠ SECURITY BOUNDARY — READ BEFORE SHIPPING REAL DATA
    This build enforces the allowlist IN THE BROWSER, which any
@@ -33,7 +33,7 @@ const PRAMANA_AUTH = (function(){
   const USERS_KEY    = 'pramana_users';
   const REQUESTS_KEY = 'pramana_access_requests';
 
-  const ROLES = { clinician:1, editor:2, admin:3 };
+  const ROLES = { clinician:1, admin:2 };
 
   /* ---------- storage helpers ---------- */
   const read  = (k, fallback) => { try { return JSON.parse(localStorage.getItem(k)) ?? fallback; } catch(e){ return fallback; } };

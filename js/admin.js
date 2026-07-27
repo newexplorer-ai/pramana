@@ -96,8 +96,8 @@
     audit:['Audit log','All configuration mutations'],
   };
 
-  /* Views an editor may not open (PRD §6.5 — admin only). */
-  const ADMIN_ONLY = ['users','keys'];
+  // Every admin view is admin-only now that the editor tier is gone.
+  const ADMIN_ONLY = [];
   const isAdmin = () => PRAMANA_AUTH.can('admin');
 
   /* ---------- LIVE mode (backend present): server owns all data ---------- */
@@ -215,7 +215,6 @@
   })();
 
   function render(){
-    // An editor landing on an admin-only view falls back to the allowlist.
     if(ADMIN_ONLY.includes(state.view) && !isAdmin()) state.view = 'allowlist';
     closeDrawer();                 // switching view closes the mobile drawer
     renderNav();
@@ -392,7 +391,6 @@
           <span class="field-label">Role</span>
           <select id="uRole" class="role-select">
             <option value="clinician">clinician</option>
-            <option value="editor">editor</option>
             <option value="admin">admin</option>
           </select>
         </div>
@@ -414,7 +412,7 @@
             <div class="cell-note">${esc(u.name)}<div class="cell-date">added by ${esc(u.by)} · ${esc(u.date)}</div></div>
             <div>
               <select class="role-select sm" data-role="${i}" ${self?'disabled title="You cannot change your own role"':''}>
-                ${['clinician','editor','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${r}</option>`).join('')}
+                ${['clinician','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${r}</option>`).join('')}
               </select>
             </div>
             <div class="cell-by">${esc(u.lastLogin||'never')}
@@ -658,7 +656,7 @@
             <div class="cell-who-wrap"><div class="cell-who">${esc(r.who)}</div><div class="cell-when">${esc(r.when)}</div></div>
           </div>`).join('')}
       </div>
-      ${live()&&!isAdmin()?'<div class="rail-note" style="margin-top:10px;">Config is read-only for editors.</div>':''}`;
+      `;
 
     wireSwitches();
     wireProviders();

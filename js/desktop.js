@@ -867,8 +867,8 @@
     document.getElementById('meAvatar').textContent = PRAMANA_AUTH.initials(me.name);
     document.getElementById('meName').textContent  = me.name;
     document.getElementById('meMeta').textContent  = 'Beta · ' + me.email;
-    // Admins and editors get a way into the configuration portal.
-    if(PRAMANA_AUTH.can('editor')){
+    // Admins get a way into the configuration portal.
+    if(PRAMANA_AUTH.can('admin')){
       const nav = document.querySelector('.side-nav');
       const b = document.createElement('button');
       b.className = 'nav-item';

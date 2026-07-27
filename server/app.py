@@ -82,7 +82,7 @@ def today() -> str:
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS allowed_users(
   email TEXT PRIMARY KEY, name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('clinician','editor','admin')),
+  role TEXT NOT NULL CHECK(role IN ('clinician','admin')),
   enabled INTEGER NOT NULL DEFAULT 1,
   added_by TEXT, created_at TEXT, last_login TEXT,
   password_hash TEXT);
@@ -194,6 +194,18 @@ def _migrate() -> None:
     ucols = {r["name"] for r in q("PRAGMA table_info(allowed_users)")}
     if "password_hash" not in ucols:
         q("ALTER TABLE allowed_users ADD COLUMN password_hash TEXT")
+    # The editor role was removed. A leftover row would KeyError in
+    # require_role, so retire it — to clinician, not admin: dropping a tier
+    # must never silently escalate someone. Audited so it is re-grantable.
+    stale = q("SELECT email FROM allowed_users WHERE role='editor'")
+    if stale:
+        q("UPDATE allowed_users SET role='clinician' WHERE role='editor'")
+        for r in stale:
+            # Inline INSERT, not audit(): that helper is defined after this
+            # function, so calling it here would NameError during boot.
+            q("""INSERT INTO audit_log(actor,action,change,created_at)
+                 VALUES('system','update',?,?)""",
+              (f"role editor retired → clinician for {r['email']}", now()))
     tcols = {r["name"] for r in q("PRAGMA table_info(turns)")}
     if "result_json" not in tcols:
         q("ALTER TABLE turns ADD COLUMN result_json TEXT")
@@ -273,7 +285,7 @@ def audit(actor: str, action: str, change: str) -> None:
 
 # ---------------------------------------------------------------- auth
 
-ROLES = {"clinician": 1, "editor": 2, "admin": 3}
+ROLES = {"clinician": 1, "admin": 2}
 
 
 MIN_PASSWORD_LEN = 8
@@ -1444,12 +1456,12 @@ def request_access(body: dict):
 # ---------------------------------------------------------------- admin: domains
 
 @app.get("/api/admin/domains")
-def domains_list(user: dict = Depends(require_role("editor"))):
+def domains_list(user: dict = Depends(require_role("admin"))):
     return [dict(r) for r in q("SELECT * FROM allowlist_domains ORDER BY created_at")]
 
 
 @app.post("/api/admin/domains")
-def domains_add(body: dict, user: dict = Depends(require_role("editor"))):
+def domains_add(body: dict, user: dict = Depends(require_role("admin"))):
     domain = str(body.get("domain", "")).strip().lower()
     note = str(body.get("trust_note", "")).strip()
     if not re.match(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$", domain):
@@ -1467,7 +1479,7 @@ def domains_add(body: dict, user: dict = Depends(require_role("editor"))):
 
 
 @app.patch("/api/admin/domains/{domain}")
-def domains_toggle(domain: str, body: dict, user: dict = Depends(require_role("editor"))):
+def domains_toggle(domain: str, body: dict, user: dict = Depends(require_role("admin"))):
     enabled = 1 if body.get("enabled") else 0
     if not q("SELECT 1 FROM allowlist_domains WHERE domain=?", (domain,)):
         raise HTTPException(404, "not_found")
@@ -1577,7 +1589,7 @@ def requests_decide(req_id: int, body: dict, user: dict = Depends(require_role("
 # ---------------------------------------------------------------- admin: config & audit
 
 @app.get("/api/admin/config")
-def config_list(user: dict = Depends(require_role("editor"))):
+def config_list(user: dict = Depends(require_role("admin"))):
     return [dict(r) for r in q("SELECT * FROM app_config ORDER BY key")]
 
 
@@ -1669,7 +1681,7 @@ def credentials_recheck(user: dict = Depends(require_role("admin"))):
 
 
 @app.get("/api/admin/providers")
-def providers_list(user: dict = Depends(require_role("editor"))):
+def providers_list(user: dict = Depends(require_role("admin"))):
     """The provider switch: which providers exist, which is on, which are usable."""
     act = active_provider()
     return {
@@ -1702,7 +1714,7 @@ def providers_activate(name: str, user: dict = Depends(require_role("admin"))):
 
 
 @app.get("/api/admin/audit")
-def audit_list(user: dict = Depends(require_role("editor"))):
+def audit_list(user: dict = Depends(require_role("admin"))):
     return [dict(r) for r in
             q("SELECT * FROM audit_log ORDER BY id DESC LIMIT 200")]
 
@@ -1764,7 +1776,7 @@ def _export_rows(user_email: str = "", since: str = "") -> list[dict]:
 
 
 @app.get("/api/admin/usage")
-def admin_usage(user: dict = Depends(require_role("editor"))):
+def admin_usage(user: dict = Depends(require_role("admin"))):
     """Per-user activity summary — the at-a-glance view for a test round."""
     rows = q("""SELECT user_email,
                        COUNT(*)                                    AS questions,
@@ -1782,7 +1794,7 @@ def admin_usage(user: dict = Depends(require_role("editor"))):
 
 @app.get("/api/admin/export")
 def admin_export(format: str = "json", user_email: str = "", since: str = "",
-                 user: dict = Depends(require_role("editor"))):
+                 user: dict = Depends(require_role("admin"))):
     """Full Q&A export for analysis. format=csv streams a spreadsheet-ready
     file; format=json returns the same rows. Optional user_email / since
     (ISO date) filters."""
@@ -1808,7 +1820,7 @@ def admin_export(format: str = "json", user_email: str = "", since: str = "",
 
 
 @app.get("/api/admin/gap-log")
-def gap_log(user: dict = Depends(require_role("editor"))):
+def gap_log(user: dict = Depends(require_role("admin"))):
     """Corpus-gap register: unanswered / unverified / suggested-source queries."""
     return [dict(r) for r in q("""
         SELECT query_id, query_text, tier, status, high_stakes,
