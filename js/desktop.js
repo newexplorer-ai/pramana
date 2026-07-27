@@ -146,13 +146,26 @@
   function renderRecents(){
     if(isLive()){
       recentsEl.innerHTML = LIVE.recents.length
-        ? LIVE.recents.map((r,i) =>
-            `<button class="recent ${r.convId===LIVE.convId?'active':''}" data-i="${i}" title="${esc(r.title)}">${esc(r.title)}</button>`).join('')
+        ? LIVE.recents.map((r,i) => `
+            <div class="recent-row">
+              <button class="recent ${r.convId===LIVE.convId?'active':''}" data-i="${i}" title="${esc(r.title)}">${esc(r.title)}</button>
+              <button class="recent-del" data-del="${i}" title="Delete this conversation" aria-label="Delete conversation">×</button>
+            </div>`).join('')
         : `<div class="rail-note" style="padding:4px 10px;">Your past questions appear here.</div>`;
       recentsEl.querySelectorAll('.recent').forEach(el =>
         el.addEventListener('click', () => {
           const r = LIVE.recents[+el.getAttribute('data-i')];
           openConversationById(r.convId);
+        }));
+      recentsEl.querySelectorAll('.recent-del').forEach(el =>
+        el.addEventListener('click', async e => {
+          e.stopPropagation();                       // don't open the thread
+          const r = LIVE.recents[+el.getAttribute('data-del')];
+          if(!r) return;
+          try { await PRAMANA_API.del('/api/conversations/' + encodeURIComponent(r.convId)); }
+          catch(err){ return; }
+          if(LIVE.convId === r.convId){ LIVE.convId = null; renderAsk(); }
+          loadConversations();
         }));
       return;
     }
@@ -510,6 +523,25 @@
 
   /* Terminal not-found: no tier answered. Deliberately styled unlike any
      tier — the clinician sees what was searched, never a synthesized answer. */
+  /* Not a medical question: declined up front, before any search. Styled
+     plainly — this is a scope statement, not a failure to find sources. */
+  function renderOutOfScope(res, query){
+    setStrip(null);
+    if(!activeTurn) newTurn();
+    activeTurn.innerHTML = `
+      <div class="query-echo"><p>${esc(query)}</p></div>
+      <div class="oos-card">
+        <div class="oos-head">${svg(I.info,{w:15,stroke:'#5a6b7a'})}<span>This isn’t a medical question</span></div>
+        <p class="oos-why">Praman only answers clinical and medical questions, grounded in medical literature. Ask about a condition, drug, guideline, or the evidence behind them.</p>
+      </div>
+      <div style="height:20px;"></div>`;
+    railTitle.textContent = 'Sources · 0';
+    railMode.textContent = 'Out of scope';
+    railBody.innerHTML = `<div class="rail-note">No sources were searched — the question is outside what Praman covers.</div>`;
+    syncSourcesBadge();
+    renderRecents();
+  }
+
   function renderNotFound(res, query){
     setStrip(null);
     if(!activeTurn) newTurn();
@@ -644,6 +676,7 @@
 
     // tier === null means every tier fell through: a distinct not-found state.
     // No badge, no tier colour, no synthesized answer — just what was searched.
+    if(res.status === 'out_of_scope') return renderOutOfScope(res, query);
     if(res.tier === null || res.status === 'not_found') return renderNotFound(res, query);
 
     if(!activeTurn) newTurn();          // recents/direct render without askLive

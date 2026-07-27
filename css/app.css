@@ -39,6 +39,18 @@ body.apppage{
   overflow:hidden;text-overflow:ellipsis;background:none;border:none;cursor:pointer;text-align:left;width:100%;
   transition:background .15s;flex:none;
 }
+/* Each history row is the title plus a delete affordance that only appears on
+   hover (and is always visible on touch, where there is no hover). */
+.recent-row{display:flex;align-items:center;gap:2px;}
+.recent-row .recent{flex:1;min-width:0;}
+.recent-del{
+  flex:none;width:22px;height:22px;border:none;background:none;border-radius:6px;
+  color:var(--faint-2);font-size:15px;line-height:1;cursor:pointer;opacity:0;
+  transition:opacity .12s,background .15s,color .15s;
+}
+.recent-row:hover .recent-del{opacity:1;}
+.recent-del:hover{background:#e6e3dc;color:#b4543e;}
+@media (hover:none){ .recent-del{opacity:.55;} }
 .recent:hover{background:#eceae4;}
 .recent.active{background:#e9e7e1;font-weight:600;color:var(--ink);}
 .side-user{
@@ -179,6 +191,15 @@ body.apppage{
 /* ---------------- not found (tier: null) ----------------
    Deliberately unlike any tier treatment: ochre, not green/blue/purple, and
    carrying no badge — so a refusal can never read as a grounded answer. */
+/* Out of scope: cool neutral, deliberately unlike the ochre not-found card —
+   nothing went wrong, the question is simply outside what Praman answers. */
+.oos-card{
+  margin-top:16px;border:1px solid #dde3e8;border-radius:10px;
+  background:#f4f6f8;padding:18px 20px;
+}
+.oos-head{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:600;color:#41586b;}
+.oos-why{margin:10px 0 0;font-size:12.5px;line-height:1.65;color:#4e6274;}
+
 .nf-card{
   margin-top:16px;border:1px solid var(--adm-br,#e6d6c6);border-radius:10px;
   background:var(--adm-bg,#f4ece4);padding:18px 20px;

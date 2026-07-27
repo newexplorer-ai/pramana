@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient                 # noqa: E402
 
 client = TestClient(A.app)
 FAILURES: list[str] = []
+_REAL_TRIAGE = A._triage           # kept before the stubs replace it
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -487,7 +488,7 @@ live_intl = {r["domain"] for r in A.q(
 live_in = {r["domain"] for r in A.q(
     "SELECT domain FROM allowlist_domains WHERE enabled=1 AND region='IN'")}
 
-A._retrieval_plan = lambda q: "both"
+A._triage = lambda q: {"in_scope": True, "plan": "both"}
 compose_seen = {}
 
 
@@ -566,7 +567,7 @@ def _plan_spy_search(model, system, msgs, pool, effort, max_uses):
     return ("International draft.", list(INTL_CITE), "stub", False)
 
 
-A._retrieval_plan = lambda q: "international_only"
+A._triage = lambda q: {"in_scope": True, "plan": "international_only"}
 A._grounded_answer = _plan_spy_search
 searched_pools.clear()
 r11d = ask("dual international_only plan probe")
@@ -575,7 +576,7 @@ check("international_only plan searches only the international pool",
 
 # 11e — a composed answer that is the sentinel/empty falls through (the only
 # refusal guard left in the dual path)
-A._retrieval_plan = lambda q: "both"
+A._triage = lambda q: {"in_scope": True, "plan": "both"}
 A._grounded_answer = _dual_search_factory(list(CITE), list(INTL_CITE))
 A._compose = lambda q, i, n: (SENTINEL, list(i[1]) + list(n[1]), [], "stub-compose")
 r11e = ask("dual sentinel-compose probe")
@@ -627,7 +628,7 @@ def _boom(*a, **k):
     raise _Transient("500")
 A._grounded_answer = _boom
 A._openai_plain = _boom
-A._retrieval_plan = lambda q: "both"
+A._triage = lambda q: {"in_scope": True, "plan": "both"}
 r12 = ask("provider outage probe")
 check("provider outage → status not_found", r12["status"] == "not_found",
       f"status={r12['status']}")
@@ -665,6 +666,71 @@ check("session inside auth.session_days still valid",
       client.get("/api/me", headers=_H).status_code == 200)
 check("removed library endpoints are gone",
       client.get("/api/library", headers=_H).status_code == 404)
+
+# --------------------------------------------------------------- test 14
+# Conversation history is per-user, and delete is owner-scoped. History can
+# carry clinical questions, so a cross-user read or delete is a real leak.
+print("\n14. History isolation and owner-scoped delete")
+A._grounded_answer = lambda *a, **k: ("An answer.", [dict(c) for c in CITE],
+                                      "stub-model", False)
+A._triage = lambda q: {"in_scope": True, "plan": "both"}
+_r = ask("history isolation probe")
+_cid = _r["conversation_id"]
+_other = client.post("/api/auth/demo", json={"email": "r.iyer@aiims.edu"}).json()["token"]
+_OH = {"Authorization": f"Bearer {_other}"}
+
+check("owner sees their own conversation",
+      any(c["id"] == _cid for c in client.get("/api/conversations", headers=AUTH).json()))
+check("another user's list excludes it",
+      not any(c["id"] == _cid for c in client.get("/api/conversations", headers=_OH).json()))
+check("another user cannot read the thread",
+      client.get(f"/api/conversations/{_cid}", headers=_OH).status_code == 404)
+check("another user cannot delete it",
+      client.delete(f"/api/conversations/{_cid}", headers=_OH).status_code == 404)
+check("it survives the failed delete",
+      client.get(f"/api/conversations/{_cid}", headers=AUTH).status_code == 200)
+check("owner can delete it",
+      client.delete(f"/api/conversations/{_cid}", headers=AUTH).status_code == 200)
+check("deleted thread is gone",
+      client.get(f"/api/conversations/{_cid}", headers=AUTH).status_code == 404)
+check("its turns are removed too",
+      not A.q("SELECT 1 FROM turns WHERE conversation_id=?", (_cid,)))
+
+# --------------------------------------------------------------- test 15
+# Scope gate: a non-medical question is declined before any search, and no
+# general-model answer is served in its place.
+print("\n15. Scope gate: non-medical questions are declined, not answered")
+_searched = []
+def _spy_search(model, system, msgs, pool, effort, max_uses):
+    _searched.append(len(pool))
+    return ("Should never run.", [dict(c) for c in CITE], "stub", False)
+A._grounded_answer = _spy_search
+A._openai_plain = lambda *a, **k: "A general-knowledge answer."
+A._triage = lambda q: {"in_scope": False, "plan": "both"}
+_searched.clear()
+r15 = ask("who won the 2024 cricket world cup?")
+check("out_of_scope status", r15["status"] == "out_of_scope", str(r15["status"]))
+check("no tier assigned", r15["tier"] is None, f"tier={r15['tier']}")
+check("no answer text served", not (r15.get("answer_text") or "").strip())
+check("no Tier 3 general-model fallback", "general-knowledge" not in (r15.get("answer_text") or ""))
+check("nothing was searched", _searched == [], str(_searched))
+check("out_of_scope logged", any(f["reason"] == "out_of_scope"
+                                 for f in (r15.get("fallthrough") or [])),
+      str(r15.get("fallthrough")))
+
+# In-scope questions are unaffected
+A._triage = lambda q: {"in_scope": True, "plan": "both"}
+r15b = ask("first-line management of type 2 diabetes")
+check("in-scope question still answered", r15b["tier"] == 2, f"tier={r15b['tier']}")
+
+# Fails open: if the triage call itself errors, a real clinical question must
+# still be answered rather than refused as "not medical".
+_saved_client = A._client
+A._client = lambda model: (_ for _ in ()).throw(RuntimeError("triage down"))
+_t = _REAL_TRIAGE("first-line management of type 2 diabetes")
+A._client = _saved_client
+check("triage failure fails open to in_scope", _t["in_scope"] is True, str(_t))
+check("triage failure defaults plan to both", _t["plan"] == "both", str(_t))
 
 print("\n" + "=" * 60)
 if FAILURES:

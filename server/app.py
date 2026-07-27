@@ -437,36 +437,49 @@ def tier2_system(region: str) -> str:
             f"{_T2_POOL.get(region, _T2_POOL['IN'])}\n\n{_T2_RULES}")
 
 
-# --- dual mode: retrieval-plan classifier ---------------------------------
-# Decides which source pools a question needs, so pure-science questions skip
-# the Indian call + compose and stay at single-pool cost. Biased to 'both':
-# the failure we care about is missing the India overlay, never over-searching.
+# --- triage: scope gate + retrieval plan ----------------------------------
+# One small-model call that answers two questions before any search runs:
+# is this a medical question at all, and which source pools does it need.
+# Folding the scope gate in here is free — dual mode already makes this call.
 PLAN_SYSTEM = (
-    "You triage a clinical question for a medical reference tool used by doctors "
-    "practising in India. Decide which source pools to search. Return JSON only.\n"
-    "plan = 'both' when the question has BOTH an evidence dimension (mechanism, "
-    "efficacy, trial data, guideline position) AND an India practice-context "
-    "dimension (drug availability, NLEM status, cost, ICMR or national-programme "
-    "position, local epidemiology). This is the common case — prefer it.\n"
+    "You triage a question for a medical literature reference tool used by "
+    "doctors practising in India. Return JSON only.\n"
+    "in_scope = false ONLY if the question is clearly not medical or clinical — "
+    "sport, travel, politics, general trivia, programming, or a request to write "
+    "code or non-clinical content. Anything a clinician might reasonably ask "
+    "about medicine, health, disease, drugs, diagnostics, physiology, public "
+    "health, medical practice or medical research is in_scope = true, including "
+    "vague, misspelt or terse clinical questions. When in any doubt, choose true.\n"
+    "plan (only meaningful when in_scope) = 'both' when the question has BOTH an "
+    "evidence dimension (mechanism, efficacy, trial data, guideline position) AND "
+    "an India practice-context dimension (drug availability, NLEM status, cost, "
+    "ICMR or national-programme position, local epidemiology). This is the common "
+    "case — prefer it.\n"
     "plan = 'international_only' ONLY for pure science with no India angle — "
     "mechanism, pathophysiology, trial design — where local context adds nothing.\n"
     "plan = 'indian_only' ONLY for purely local/administrative questions "
     "(programme coverage, NLEM listing alone) where international evidence adds "
     "nothing.\n"
-    "When unsure, choose 'both'.\n"
-    'Reply exactly: {"plan": "both" | "international_only" | "indian_only"}'
+    "When unsure about plan, choose 'both'.\n"
+    'Reply exactly: {"in_scope": <bool>, "plan": "both" | "international_only" '
+    '| "indian_only"}'
 )
 _PLANS = ("both", "international_only", "indian_only")
 
 
-def _retrieval_plan(query: str) -> str:
-    """Which pools to search. Fails open to 'both' on any doubt."""
+_TRIAGE_OPEN = {"in_scope": True, "plan": "both"}
+
+
+def _triage(query: str) -> dict:
+    """{'in_scope': bool, 'plan': str}. Fails open on any doubt: refusing a real
+    clinical question is far worse than searching for a non-medical one."""
     if cfg("search.dual_classifier", "true") != "true":
-        return "both"
+        return dict(_TRIAGE_OPEN)
     judge_model = model_for("judge")
     schema = {"type": "object",
-              "properties": {"plan": {"type": "string", "enum": list(_PLANS)}},
-              "required": ["plan"], "additionalProperties": False}
+              "properties": {"in_scope": {"type": "boolean"},
+                             "plan": {"type": "string", "enum": list(_PLANS)}},
+              "required": ["in_scope", "plan"], "additionalProperties": False}
     try:
         jc = _client(judge_model)
         if provider_of(judge_model) == "openai":
@@ -474,7 +487,7 @@ def _retrieval_plan(query: str) -> str:
                                     input=query, max_output_tokens=2000)
             text = getattr(r, "output_text", "") or ""
             if getattr(r, "status", "") == "incomplete" and not text.strip():
-                return "both"
+                return dict(_TRIAGE_OPEN)
         else:
             resp = jc.messages.create(
                 model=judge_model, max_tokens=64,
@@ -483,10 +496,13 @@ def _retrieval_plan(query: str) -> str:
                 messages=[{"role": "user", "content": query}])
             text = next(b.text for b in resp.content if b.type == "text")
         m = re.search(r"\{.*\}", text, re.S)
-        plan = json.loads(m.group(0) if m else text).get("plan")
-        return plan if plan in _PLANS else "both"
+        data = json.loads(m.group(0) if m else text)
+        plan = data.get("plan")
+        # Absent in_scope means the model did not assert out-of-scope.
+        return {"in_scope": bool(data.get("in_scope", True)),
+                "plan": plan if plan in _PLANS else "both"}
     except Exception:
-        return "both"
+        return dict(_TRIAGE_OPEN)
 
 
 # --- dual mode: compose two cited drafts into one answer ------------------
@@ -957,13 +973,34 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
         cap = int(cfg("search.max_domains_per_call",
                       str(PROVIDERS[prov].get("max_domains", 100))))
 
+        # ---------- Scope gate ----------
+        # One triage call decides both "is this medical at all" and which pools
+        # to search. Only on the first turn of a conversation: a follow-up like
+        # "what about in children?" carries no clinical signal on its own and
+        # must not be refused. Fails open — see _triage.
+        triage = dict(_TRIAGE_OPEN)
+        if not history:
+            triage = _triage(query)
+        out_of_scope = not triage["in_scope"]
+        if out_of_scope:
+            fell(2, "out_of_scope")
+            yield sse("stage", {"label": "Not a medical question"})
+            result.update({
+                "tier": None, "status": "out_of_scope",
+                "withheld_reason": "out_of_scope",
+                "answer_text": "", "segments": [], "citations": [],
+                "model_used": None, "sources_searched": [],
+            })
+
         # ---------- Dual: two dedicated parallel searches, one composed answer ----
         # Each pool gets its own call with its own search budget the other pool
         # cannot consume, so an Indian search is never starved by the denser
         # international pool. A compose call then merges the two, Indian-anchored.
-        if region_mode == "dual":
+        if out_of_scope:
+            batched = []                       # nothing is searched
+        elif region_mode == "dual":
             max_uses = int(cfg("websearch.max_uses", "3"))
-            plan = _retrieval_plan(query)
+            plan = triage["plan"]              # from the same triage call
             in_pool = by_region["IN"][:int(cfg("search.dual_indian_cap", "100"))]
             intl_pool = by_region["INTL"][:int(cfg("search.dual_intl_cap", "100"))]
             want = {"IN": plan in ("both", "indian_only") and bool(in_pool),
@@ -1137,7 +1174,7 @@ def ask(body: dict, request: Request, user: dict = Depends(current_user)):
 
         # ---------- Tier 3 / not found ----------
         # A not_found response carries tier: null — no badge, no tier styling.
-        if not answered_t2:
+        if not answered_t2 and not out_of_scope:
             # No grounded answer → always fall back to the general model. There
             # is no upfront withhold: the only not_found left is when Tier 3
             # itself returns nothing (refusal, error, or empty).
@@ -1307,6 +1344,19 @@ def conversation_get(conversation_id: str, user: dict = Depends(current_user)):
                 pass
         turns.append(t)
     return {"id": conversation_id, "title": owner[0]["title"], "turns": turns}
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def conversation_delete(conversation_id: str, user: dict = Depends(current_user)):
+    """Remove a conversation and its turns. Owner-scoped: another user's id
+    returns 404 rather than deleting anything. query_logs rows are kept — the
+    gap log is an operational record, not user-facing history."""
+    owner = q("SELECT user_email FROM conversations WHERE id=?", (conversation_id,))
+    if not owner or owner[0]["user_email"] != user["email"]:
+        raise HTTPException(404, "not_found")
+    q("DELETE FROM turns WHERE conversation_id=?", (conversation_id,))
+    q("DELETE FROM conversations WHERE id=?", (conversation_id,))
+    return {"ok": True}
 
 
 # The manual Save/Library flow was removed from the UI — auto-saved
