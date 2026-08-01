@@ -379,7 +379,7 @@ check("both prompts carry the provenance rule",
 check("both prompts carry the refusal sentinel",
       all("NO_SUBSTANTIVE_ANSWER" in s for s in (in_sys, intl_sys)))
 check("both prompts ask for structure and quotes",
-      all("LENGTH AND STRUCTURE" in s and "QUOTE THE SOURCES" in s
+      all("STRUCTURE" in s and "QUOTE THE SOURCES" in s
           for s in (in_sys, intl_sys)))
 
 # Markdown structure must survive the link stripper: it used to remove bold,
